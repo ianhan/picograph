@@ -81,9 +81,11 @@ int main() {
     multicore_launch_core1(picomem::picomem_bus_loop);
 
     for (;;) {
+        picomem::picomem_bus_task();
 #if PICOMEM_ENABLE_USB_HOST
         picomem::usb_host_task();
 #endif
+        picomem::picomem_bus_task();
         if (module.tick) {
             module.tick();
         }

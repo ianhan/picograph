@@ -5,6 +5,8 @@
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
+#include "hardware/sync.h"
+#include "pico/platform/sections.h"
 #include "pico/stdlib.h"
 
 #if PICOMEM_BOARD_PICOMEM_M1
@@ -21,6 +23,8 @@
 
 namespace picomem {
 namespace {
+
+#define PICOMEM_BUS_HOT __scratch_x("picomem_bus")
 
 constexpr uint32_t kCycleMemRead = 0x01;
 constexpr uint32_t kCycleMemWrite = 0x02;
@@ -47,10 +51,39 @@ const MemTrap *mem_table[kIsaMemSlotCount];
 const IoSnoop *io_snoop_table[kIsaIoSlotCount];
 const MemSnoop *mem_snoop_table[kIsaMemSlotCount];
 
+constexpr uint32_t kIoSnoopQueueSize = 4096;
+constexpr uint32_t kIoSnoopQueueMask = kIoSnoopQueueSize - 1u;
+constexpr uint32_t kMemSnoopQueueSize = 256;
+constexpr uint32_t kMemSnoopQueueMask = kMemSnoopQueueSize - 1u;
+
+struct IoSnoopEvent {
+    const IoSnoop *snoop;
+    uint16_t port;
+    uint8_t data;
+};
+
+struct MemSnoopEvent {
+    const MemSnoop *snoop;
+    uint32_t address;
+    uint8_t data;
+};
+
+static_assert((kIoSnoopQueueSize & kIoSnoopQueueMask) == 0, "I/O snoop queue size must be a power of two");
+static_assert((kMemSnoopQueueSize & kMemSnoopQueueMask) == 0, "MEM snoop queue size must be a power of two");
+
+IoSnoopEvent io_snoop_queue[kIoSnoopQueueSize];
+MemSnoopEvent mem_snoop_queue[kMemSnoopQueueSize];
+volatile uint32_t io_snoop_head;
+volatile uint32_t io_snoop_tail;
+volatile uint32_t mem_snoop_head;
+volatile uint32_t mem_snoop_tail;
+volatile uint32_t io_snoop_dropped;
+volatile uint32_t mem_snoop_dropped;
+
 static_assert(kIsaIoSlotCount * kIsaIoSlotSize == 0x400, "I/O trap table must cover 10-bit ISA I/O");
 static_assert(kIsaMemSlotCount * kIsaMemSlotSize == 0x100000, "Memory trap table must cover 20-bit ISA memory");
 
-uint32_t control_mask() {
+uint32_t PICOMEM_BUS_HOT control_mask() {
 #if PICOMEM_MUX_V2
     return 0x0fu << PIN_A8_MR;
 #else
@@ -58,7 +91,7 @@ uint32_t control_mask() {
 #endif
 }
 
-uint32_t control_shift() {
+uint32_t PICOMEM_BUS_HOT control_shift() {
 #if PICOMEM_MUX_V2
     return PIN_A8_MR;
 #else
@@ -66,11 +99,11 @@ uint32_t control_shift() {
 #endif
 }
 
-uint32_t read_cycle_type() {
+uint32_t PICOMEM_BUS_HOT read_cycle_type() {
     return (gpio_get_all() & control_mask()) >> control_shift();
 }
 
-uint16_t decode_io_port(uint32_t pio_value) {
+uint16_t PICOMEM_BUS_HOT decode_io_port(uint32_t pio_value) {
 #if PICOMEM_MUX_V2
     return static_cast<uint16_t>((pio_value ^ 0x0300u) & kIsaIoLast);
 #else
@@ -78,7 +111,15 @@ uint16_t decode_io_port(uint32_t pio_value) {
 #endif
 }
 
-uint32_t decode_mem_address(uint32_t pio_value) {
+uint32_t PICOMEM_BUS_HOT decode_io_slot(uint32_t pio_value) {
+#if PICOMEM_MUX_V2
+    return decode_io_port(pio_value) / kIsaIoSlotSize;
+#else
+    return (pio_value << 9) >> 24;
+#endif
+}
+
+uint32_t PICOMEM_BUS_HOT decode_mem_address(uint32_t pio_value) {
 #if PICOMEM_MUX_V2
     return (pio_value ^ 0x000f00u) & kIsaMemLast;
 #else
@@ -86,25 +127,25 @@ uint32_t decode_mem_address(uint32_t pio_value) {
 #endif
 }
 
-uint8_t read_data_bus() {
+uint8_t PICOMEM_BUS_HOT read_data_bus() {
     return static_cast<uint8_t>((gpio_get_all() >> PIN_AD0) & 0xffu);
 }
 
-void put_wait(bool add_wait_state) {
+void PICOMEM_BUS_HOT put_wait(bool add_wait_state) {
     pio_sm_put(isa_pio, kIsaBusSm, add_wait_state ? kAddWaitState : kNoWaitState);
 }
 
-void finish_without_read() {
+void PICOMEM_BUS_HOT finish_without_read() {
     pio_sm_put(isa_pio, kIsaBusSm, 0x00u);
 }
 
-void finish_io_read(uint8_t data) {
+void PICOMEM_BUS_HOT finish_io_read(uint8_t data) {
     pio_sm_put(isa_pio, kIsaBusSm, kDoIor);
     pio_sm_put(isa_pio, kIsaBusSm, kReadValue | data);
     (void)pio_sm_get_blocking(isa_pio, kIsaBusSm);
 }
 
-void finish_mem_read(uint8_t data) {
+void PICOMEM_BUS_HOT finish_mem_read(uint8_t data) {
     pio_sm_put(isa_pio, kIsaBusSm, kDoMemr);
     pio_sm_put(isa_pio, kIsaBusSm, kReadValue | data);
     (void)pio_sm_get_blocking(isa_pio, kIsaBusSm);
@@ -128,6 +169,62 @@ bool valid_mem_range(uint32_t base, uint32_t length) {
     return end <= kIsaMemLast && end >= base;
 }
 
+bool PICOMEM_BUS_HOT io_snoop_matches(const IoSnoop *snoop, uint16_t port) {
+    if (!snoop || !snoop->write) {
+        return false;
+    }
+
+    uint32_t end = static_cast<uint32_t>(snoop->base) + snoop->length;
+    return port >= snoop->base && port < end;
+}
+
+bool PICOMEM_BUS_HOT mem_snoop_matches(const MemSnoop *snoop, uint32_t address) {
+    if (!snoop || !snoop->write) {
+        return false;
+    }
+
+    uint32_t end = snoop->base + snoop->length;
+    return address >= snoop->base && address < end;
+}
+
+void PICOMEM_BUS_HOT enqueue_io_snoop(const IoSnoop *snoop, uint16_t port, uint8_t data) {
+    if (!io_snoop_matches(snoop, port)) {
+        return;
+    }
+
+    uint32_t head = io_snoop_head;
+    if (head - io_snoop_tail >= kIoSnoopQueueSize) {
+        ++io_snoop_dropped;
+        return;
+    }
+
+    IoSnoopEvent &event = io_snoop_queue[head & kIoSnoopQueueMask];
+    event.snoop = snoop;
+    event.port = port;
+    event.data = data;
+    __mem_fence_release();
+    io_snoop_head = head + 1u;
+}
+
+void PICOMEM_BUS_HOT enqueue_mem_snoop(const MemSnoop *snoop, uint32_t address, uint8_t data) {
+    if (!mem_snoop_matches(snoop, address)) {
+        return;
+    }
+
+    uint32_t head = mem_snoop_head;
+    if (head - mem_snoop_tail >= kMemSnoopQueueSize) {
+        ++mem_snoop_dropped;
+        return;
+    }
+
+    MemSnoopEvent &event = mem_snoop_queue[head & kMemSnoopQueueMask];
+    event.snoop = snoop;
+    event.address = address;
+    event.data = data;
+    __mem_fence_release();
+    mem_snoop_head = head + 1u;
+}
+
 }  // namespace
 
 void picomem_bus_init() {
@@ -143,6 +240,12 @@ void picomem_bus_init() {
     for (const MemSnoop *&snoop : mem_snoop_table) {
         snoop = nullptr;
     }
+    io_snoop_head = 0;
+    io_snoop_tail = 0;
+    mem_snoop_head = 0;
+    mem_snoop_tail = 0;
+    io_snoop_dropped = 0;
+    mem_snoop_dropped = 0;
 
     gpio_init(PIN_IORDY);
     gpio_set_dir(PIN_IORDY, GPIO_OUT);
@@ -194,8 +297,30 @@ void picomem_bus_init() {
 #endif
 
 #if PICOMEM_PIO_NEEDS_INVALID_CYCLE
-    pio_sm_put(isa_pio, kIsaBusSm, 0x0ffff0f0u);
+    pio_sm_put(isa_pio, kIsaBusSm, 0xfffff0f0u);
 #endif
+}
+
+void picomem_bus_task() {
+    while (io_snoop_tail != io_snoop_head) {
+        uint32_t tail = io_snoop_tail;
+        __mem_fence_acquire();
+        const IoSnoopEvent &event = io_snoop_queue[tail & kIoSnoopQueueMask];
+        if (event.snoop && event.snoop->write) {
+            event.snoop->write(event.port, event.data);
+        }
+        io_snoop_tail = tail + 1u;
+    }
+
+    while (mem_snoop_tail != mem_snoop_head) {
+        uint32_t tail = mem_snoop_tail;
+        __mem_fence_acquire();
+        const MemSnoopEvent &event = mem_snoop_queue[tail & kMemSnoopQueueMask];
+        if (event.snoop && event.snoop->write) {
+            event.snoop->write(event.address, event.data);
+        }
+        mem_snoop_tail = tail + 1u;
+    }
 }
 
 TrapResult register_io_trap(const IoTrap &trap) {
@@ -295,7 +420,7 @@ const char *trap_result_name(TrapResult result) {
     }
 }
 
-[[noreturn]] void picomem_bus_loop() {
+[[noreturn]] void PICOMEM_BUS_HOT picomem_bus_loop() {
     for (;;) {
         uint32_t cycle;
         do {
@@ -314,14 +439,21 @@ const char *trap_result_name(TrapResult result) {
 
         if (cycle == kCycleIoRead || cycle == kCycleIoWrite) {
             uint16_t port = decode_io_port(raw_address);
-            const IoTrap *trap = io_table[port / kIsaIoSlotSize];
-            const IoSnoop *snoop = io_snoop_table[port / kIsaIoSlotSize];
+            uint32_t slot = decode_io_slot(raw_address);
+            if (slot >= kIsaIoSlotCount) {
+                put_wait(false);
+                finish_without_read();
+                continue;
+            }
+
+            const IoTrap *trap = io_table[slot];
+            const IoSnoop *snoop = io_snoop_table[slot];
             if (!trap) {
                 put_wait(false);
                 uint8_t data = read_data_bus();
                 finish_without_read();
-                if (cycle == kCycleIoWrite && snoop && snoop->write) {
-                    snoop->write(port, data);
+                if (cycle == kCycleIoWrite) {
+                    enqueue_io_snoop(snoop, port, data);
                 }
                 continue;
             }
@@ -332,10 +464,8 @@ const char *trap_result_name(TrapResult result) {
                 if (trap->write) {
                     trap->write(port, data);
                 }
-                if (snoop && snoop->write) {
-                    snoop->write(port, data);
-                }
                 finish_without_read();
+                enqueue_io_snoop(snoop, port, data);
                 continue;
             }
 
@@ -357,8 +487,8 @@ const char *trap_result_name(TrapResult result) {
                 put_wait(false);
                 uint8_t data = read_data_bus();
                 finish_without_read();
-                if (cycle == kCycleMemWrite && snoop && snoop->write) {
-                    snoop->write(address, data);
+                if (cycle == kCycleMemWrite) {
+                    enqueue_mem_snoop(snoop, address, data);
                 }
                 continue;
             }
@@ -369,10 +499,8 @@ const char *trap_result_name(TrapResult result) {
                 if (trap->write) {
                     trap->write(address, data);
                 }
-                if (snoop && snoop->write) {
-                    snoop->write(address, data);
-                }
                 finish_without_read();
+                enqueue_mem_snoop(snoop, address, data);
                 continue;
             }
 
@@ -390,5 +518,7 @@ const char *trap_result_name(TrapResult result) {
         finish_without_read();
     }
 }
+
+#undef PICOMEM_BUS_HOT
 
 }  // namespace picomem

@@ -21,6 +21,8 @@ set(PICOMEM_SYS_CLK_KHZ "280000" CACHE STRING "RP2040/RP2350 system clock in kHz
 set(PICOMEM_ENABLE_USB_HOST ON CACHE BOOL "Enable TinyUSB host support")
 set(PICOMEM_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
 set(PICOMEM_ENABLE_PSRAM ON CACHE BOOL "Enable rp2040-psram support")
+set(PICOMEM_ENABLE_DISPLAYLINK ON CACHE BOOL "Enable DisplayLink USB display support")
+set(PICOMEM_ENABLE_GC ON CACHE BOOL "Enable GC graphics support")
 set(PICOMEM_PSRAM_PIO "1" CACHE STRING "PIO block used by rp2040-psram")
 set(PICOMEM_PSRAM_SM "-1" CACHE STRING "PIO state machine for rp2040-psram, or -1 to claim one")
 set(PICOMEM_PSRAM_TARGET_MHZ "220" CACHE STRING "Target PSRAM PIO clock in MHz, matching ISA-PicoMEM's DMA path")
@@ -62,6 +64,23 @@ if(PICOMEM_ENABLE_PSRAM)
         message(FATAL_ERROR "PICOMEM_ENABLE_PSRAM requires the lib/rp2040-psram submodule")
     endif()
     add_subdirectory(lib/rp2040-psram)
+endif()
+
+if(PICOMEM_ENABLE_DISPLAYLINK)
+    if(NOT PICOMEM_ENABLE_USB_HOST)
+        message(FATAL_ERROR "PICOMEM_ENABLE_DISPLAYLINK requires PICOMEM_ENABLE_USB_HOST")
+    endif()
+    if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo/CMakeLists.txt)
+        message(FATAL_ERROR "PICOMEM_ENABLE_DISPLAYLINK requires lib/libdlo")
+    endif()
+    add_subdirectory(lib/libdlo)
+endif()
+
+if(PICOMEM_ENABLE_GC)
+    if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/libgc/CMakeLists.txt)
+        message(FATAL_ERROR "PICOMEM_ENABLE_GC requires lib/libgc")
+    endif()
+    add_subdirectory(lib/libgc)
 endif()
 
 add_executable(picomem
@@ -125,6 +144,25 @@ if(PICOMEM_ENABLE_PSRAM)
     )
 else()
     target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_PSRAM=0)
+endif()
+
+if(PICOMEM_ENABLE_DISPLAYLINK)
+    target_link_libraries(picomem libdlo)
+    target_include_directories(picomem PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo)
+    target_compile_definitions(picomem PRIVATE
+        PICOMEM_ENABLE_DISPLAYLINK=1
+        CFG_TUH_API_EDPT_XFER=1
+    )
+else()
+    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_DISPLAYLINK=0)
+endif()
+
+if(PICOMEM_ENABLE_GC)
+    target_link_libraries(picomem libgc)
+    target_include_directories(picomem PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libgc)
+    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_GC=1)
+else()
+    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_GC=0)
 endif()
 
 if(PICOMEM_MODULE STREQUAL "TEMPLATE")

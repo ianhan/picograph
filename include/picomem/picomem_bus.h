@@ -23,6 +23,7 @@ enum class TrapResult : uint8_t {
 };
 
 void picomem_bus_init();
+void picomem_bus_task();
 TrapResult register_io_trap(const IoTrap &trap);
 TrapResult register_mem_trap(const MemTrap &trap);
 TrapResult register_io_snoop(const IoSnoop &snoop);

@@ -1,0 +1,117 @@
+#include "system.h"
+#include "altera_avalon_spi.h"
+#include "altera_avalon_spi_regs.h"
+#include "altera_avalon_pio_regs.h"
+#include "sys/alt_irq.h"
+#include <unistd.h>
+#include <stdio.h>
+
+#include "gc.h"
+
+#define RES_PIN 1
+#define DC_PIN 2
+
+static int waveshare32b_init_sequence[] = {
+        -1,0xCB,0x39,0x2C,0x00,0x34,0x02,-1,0xCF,0x00,0xC1,0x30,
+        -1,0xE8,0x85,0x00,0x78,-1,0xEA,0x00,0x00,-1,0xED,0x64,0x03,0x12,0x81,
+        -1,0xF7,0x20,-1,0xC0,0x23,-1,0xC1,0x10,-1,0xC5,0x3e,0x28,-1,0xC7,0x86,
+        -1,0x36,0x28,-1,0x3A,0x66,-1,0xB1,0x00,0x18,-1,0xB6,0x08,0x82,0x27,
+        -1,0xF2,0x00,-1,0x26,0x01,
+        -1,0xE0,0x0F,0x31,0x2B,0x0C,0x0E,0x08,0x4E,0xF1,0x37,0x07,0x10,0x03,0x0E,0x09,0x00,
+        -1,0xE1,0x00,0x0E,0x14,0x03,0x11,0x07,0x31,0xC1,0x48,0x08,0x0F,0x0C,0x31,0x36,0x0F,
+        -1,0x11,-2,120,-1,0x29,-1,0x2c,-1,0x2a,0x00,0x00,0x01,-1,0x2b,0x00,0x00,0x00,0xef,
+        -1,0x2A,0x00,0x00,0x01,0x3F,
+        -1,0x2B,0x00,0x00,0x00,0xEF,
+        -1,0x2C,
+        -3 };
+
+void GCInitializeLCDDriver(GC *pGC)
+{
+	GCCreateWithPreallocatedMemory(NULL, 320, 240, 0, pGC);
+
+	// stop the SPI framebuffer transmitter
+    IOWR_ALTERA_AVALON_PIO_CLEAR_BITS(PIO_0_BASE, 0x4);
+
+    // Reboot LCD
+    IOWR_ALTERA_AVALON_PIO_SET_BITS(PIO_0_BASE, RES_PIN);
+	alt_busy_sleep(5*1000);
+    IOWR_ALTERA_AVALON_PIO_CLEAR_BITS(PIO_0_BASE, RES_PIN);
+	alt_busy_sleep(5*1000);
+    IOWR_ALTERA_AVALON_PIO_SET_BITS(PIO_0_BASE, RES_PIN);
+	alt_busy_sleep(5*1000);
+
+    // stop Frame Reader
+    IOWR(0x8080000, 0, 0);
+
+    // reset the video ip
+    IOWR_ALTERA_AVALON_PIO_SET_BITS(PIO_0_BASE, 0x8);
+
+	// Frame 0 Base Address
+    IOWR(0x8080000, 4, 0);
+    // Frame 0 Words
+    IOWR(0x8080000, 5,  320*240);
+    // Frame 0 Single Cycle Color Patterns
+    IOWR(0x8080000, 6,  320*240);
+    // Frame 0 Width
+    IOWR(0x8080000, 8, 320);
+    // Frame 0 Height
+    IOWR(0x8080000, 9, 240);
+    //// Frame 0 Interlaced
+    IOWR(0x8080000, 10, 0);
+    // Frame Select
+    IOWR(0x8080000, 3, 0);
+
+	// Initialize LCD
+	int i = 0;
+	while(waveshare32b_init_sequence[i] != -3)
+	{
+		int inc = 1;
+
+		if (waveshare32b_init_sequence[i] == -2)
+		{
+			alt_busy_sleep(5*1000);
+		}
+		else if (waveshare32b_init_sequence[i] == -1)
+		{
+			IOWR_ALTERA_AVALON_PIO_CLEAR_BITS(PIO_0_BASE, DC_PIN);
+			alt_avalon_spi_command(SPI_0_BASE,
+								   0,
+								   1,
+								   &waveshare32b_init_sequence[i+1],
+								   0,
+								   NULL,
+								   0);
+			inc = 2;
+		}
+		else
+		{
+			IOWR_ALTERA_AVALON_PIO_SET_BITS(PIO_0_BASE, DC_PIN);
+			alt_avalon_spi_command(SPI_0_BASE,
+								   0,
+								   1,
+								   &waveshare32b_init_sequence[i],
+								   0,
+								   NULL,
+								   0);
+		}
+
+		i+= inc;
+		// clock rate based...
+		alt_busy_sleep(10*1000);
+	}
+
+	IOWR_ALTERA_AVALON_PIO_CLEAR_BITS(PIO_0_BASE, 0x8);
+
+	// Prepare for write data
+    IOWR_ALTERA_AVALON_PIO_SET_BITS(PIO_0_BASE, DC_PIN);
+
+    // Kick off the SPI framebuffer transmitter
+	IOWR_ALTERA_AVALON_PIO_SET_BITS(PIO_0_BASE, 0x4);
+
+	// start Frame Reader
+    IOWR(0x8080000, 0, 1);
+}
+
+void GCShutdownLCDDriver(GC *pGC)
+{
+}

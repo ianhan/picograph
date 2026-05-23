@@ -1,0 +1,39 @@
+
+libdlo README and Quick Start Guide
+========================
+
+Prerequisites:
+
+ * Install a compatible libusb version (0.13)
+    * on ubuntu - "sudo apt-get install libusb"
+ * Plug in a compatible DisplayLink USB device
+
+To start the build process, open a shell prompt (as the user who's home
+directory the libdlo is installed into) and change to the libdlo directory
+to run
+
+  $ ./configure
+  $ sudo make install
+  $ make check
+
+Make check will do some basic drawing on the DisplayLink device. 
+The 'sudo make install' step will have installed libdlo.h, the main header, 
+in your local include directory, and libdlo in your local library.
+
+The tests run by 'make check' are in the 'test' directory.  If you 
+run the tests by hand, they do require sudo.  So, to run the program
+called test1, run "sudo ./test1"
+
+Building the Doxygen documentation
+----------------------------------
+
+The libdlo library sources are comprehensively documented using the Doxygen
+tool (which you will need to install, along with its dependencies). To build
+this documentation, do the following:
+
+  $./mkdox.sh
+
+and the resulting documents will be (re)built, with the index page being:
+
+  ~/libdlo/docs/html/index.html
+

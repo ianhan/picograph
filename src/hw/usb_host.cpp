@@ -9,6 +9,10 @@
 #include "xinput_host.h"
 #endif
 
+#if PICOMEM_ENABLE_DISPLAYLINK
+#include "libdlo.h"
+#endif
+
 namespace picomem {
 namespace {
 
@@ -66,6 +70,33 @@ void set_status(uint8_t dev_addr, const char *message) {
              message);
     printf("usb host: %s\n", state.device_message[dev_addr - 1]);
 }
+
+#if PICOMEM_ENABLE_DISPLAYLINK
+void handle_displaylink_mount(uint8_t dev_addr) {
+    static bool initialized = false;
+
+    if (!initialized) {
+        dlo_init_t init_flags = {0};
+        initialized = (dlo_init(init_flags) == dlo_ok);
+    }
+    if (!initialized || dlo_check_device(dev_addr) != dlo_ok) {
+        return;
+    }
+
+    dlo_claim_t claim_flags = {0};
+    dlo_dev_t uid = dlo_claim_first_device(claim_flags, 0);
+    if (!uid) {
+        return;
+    }
+
+    dlo_fill_rect(uid, nullptr, nullptr, DLO_RGB(0, 0, 0));
+    dlo_flush_usb(uid, true);
+    if (dlo_device_configured) {
+        dlo_device_configured(uid);
+    }
+    set_status(dev_addr, "DisplayLink display");
+}
+#endif
 
 #if PICOMEM_ENABLE_XINPUT
 void update_joystick_from_xinput(uint16_t buttons,
@@ -136,6 +167,9 @@ const UsbHostState &usb_host_state() {
 extern "C" void tuh_mount_cb(uint8_t dev_addr) {
     (void)dev_addr;
     picomem::refresh_mount_count();
+#if PICOMEM_ENABLE_DISPLAYLINK
+    picomem::handle_displaylink_mount(dev_addr);
+#endif
 }
 
 extern "C" void tuh_umount_cb(uint8_t dev_addr) {
