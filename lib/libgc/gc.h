@@ -233,8 +233,12 @@ typedef struct tagGC
 
 #define GCF_DISABLEACCELERATION 0x00000001
 
+#ifndef MIN
 #define MIN(a, b)  (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
 #define MAX(a, b)  (((a) > (b)) ? (a) : (b))
+#endif
 #define RECTWIDTH(rc) (rc->right - rc->left ? rc->right - rc->left : 1)
 #define RECTHEIGHT(rc) (rc->bottom - rc->top ? rc->bottom - rc->top : 1)
 #define SETRECT(rc, a, b, c, d) {rc->left = a; rc->top = b; rc->right = c; rc->bottom = d;}

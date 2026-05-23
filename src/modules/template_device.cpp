@@ -13,11 +13,13 @@ namespace {
 constexpr uint16_t kVgaDacMask = 0x3c6;
 constexpr uint16_t kVgaDacWriteIndex = 0x3c8;
 constexpr uint16_t kVgaDacData = 0x3c9;
+constexpr uint16_t kPostCode = 0x80;
 
 extern "C" {
 void pal_dac_mask(uint8_t mask);
 void pal_dac_write(uint8_t index);
 void pal_dac_data(uint8_t data);
+void post_code_write(uint8_t value);
 void Task_UpdatePalette();
 }
 
@@ -34,6 +36,17 @@ void palette_snoop_write(uint16_t port, uint8_t data) {
         break;
     default:
         break;
+    }
+}
+
+void post_snoop_write(uint16_t port, uint8_t data)
+{
+    switch (port) {
+        case kPostCode:
+            post_code_write(data);
+            break;
+        default:
+            break;
     }
 }
 
@@ -59,6 +72,11 @@ const IoSnoop io_snoops[] = {
         0x2,
         palette_snoop_write,
     },
+    {
+        kPostCode,
+        0x1,
+        post_snoop_write
+    }
 };
 
 const Module module = {
