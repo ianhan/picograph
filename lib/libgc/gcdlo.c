@@ -8,7 +8,7 @@
 long g_DLOScaleFactor = 1;
 static long DLO_ScaleFactor(void)
 {
-    return g_DLOScaleFactor > 0 ? g_DLOScaleFactor : 1;
+    return g_DLOScaleFactor;
 }
 
 static GCBOOL DLO_CheckRetcode(const char *operation, dlo_retcode_t ret)
@@ -146,8 +146,8 @@ GCBOOL DLO_HWSetupDevice(GCDEVICE *pDevice, GCBITMAP *pDisplaySurface, void *par
     g_DLOScaleFactor = 1;
     pDisplaySurface->pGC = pDevice->pDisplay;
     GCInitializeBitmap(pDisplaySurface,
-                       pMode->view.width,
-                       pMode->view.height,
+                       pMode->view.width / g_DLOScaleFactor,
+                       pMode->view.height / g_DLOScaleFactor,
                        (unsigned long)(uintptr_t)uid,
                        GCDeviceDisplayOnly);
 

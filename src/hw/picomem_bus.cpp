@@ -483,6 +483,9 @@ const char *trap_result_name(TrapResult result) {
             uint32_t address = decode_mem_address(raw_address);
             const MemTrap *trap = mem_table[address / kIsaMemSlotSize];
             const MemSnoop *snoop = mem_snoop_table[address / kIsaMemSlotSize];
+            if (trap && trap->active && !trap->active(address)) {
+                trap = nullptr;
+            }
             if (!trap) {
                 put_wait(false);
                 uint8_t data = read_data_bus();

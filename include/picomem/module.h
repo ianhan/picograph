@@ -19,6 +19,7 @@ struct MemTrap {
     bool add_wait_state;
     bool (*read)(uint32_t address, uint8_t *data);
     void (*write)(uint32_t address, uint8_t data);
+    bool (*active)(uint32_t address);
 };
 
 struct IoSnoop {

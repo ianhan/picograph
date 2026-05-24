@@ -9,6 +9,7 @@ It intentionally does not port PicoGUS's GUS, SB, AdLib, MPU, USB, or NE2000 dev
 - `CMakeLists.txt`: Pico SDK build with `PICOMEM_MODULE` and `PICOMEM_BOARD` selection.
 - `src/framework`: module registry, mirroring PicoGUS's one-firmware-per-device model.
 - `src/hw`: PicoMEM ISA trap table and bus loop.
+- `src/modules/hercules_device.cpp`: Hercules/MDA-compatible text and Hercules graphics emulation displayed through DisplayLink.
 - `src/modules/sample_device.cpp`: sample module covering I/O traps, memory traps, I/O snoops, and memory snoops.
 - `src/modules/register_view.cpp`: passive VGA/MCGA register, POST, and palette display module.
 - `lib`: submodules for optional PSRAM and USB-host support.
@@ -27,6 +28,7 @@ Useful options:
 ```sh
 -DPICOMEM_BOARD=PICOMEM_M2
 -DPICOMEM_MODULE=REGISTER_VIEW
+-DPICOMEM_MODULE=HERCULES
 -DPICOMEM_MODULE=SAMPLE
 -DPICOMEM_SAMPLE_IO_BASE=0x300
 -DPICOMEM_SAMPLE_MEM_BASE=0xd0000
