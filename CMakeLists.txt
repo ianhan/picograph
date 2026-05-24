@@ -23,6 +23,9 @@ set(PICOMEM_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
 set(PICOMEM_ENABLE_PSRAM ON CACHE BOOL "Enable rp2040-psram support")
 set(PICOMEM_ENABLE_DISPLAYLINK ON CACHE BOOL "Enable DisplayLink USB display support")
 set(PICOMEM_ENABLE_GC ON CACHE BOOL "Enable GC graphics support")
+set(PICOMEM_SAMPLE_IO_BASE "0x300" CACHE STRING "Base I/O port for the sample module")
+set(PICOMEM_SAMPLE_MEM_BASE "0xd0000" CACHE STRING "Base memory address for the sample module trap window")
+set(PICOMEM_SAMPLE_MEM_SNOOP_BASE "0xb8000" CACHE STRING "Base memory address for the sample module write snoop")
 set(PICOMEM_PSRAM_PIO "1" CACHE STRING "PIO block used by rp2040-psram")
 set(PICOMEM_PSRAM_SM "-1" CACHE STRING "PIO state machine for rp2040-psram, or -1 to claim one")
 set(PICOMEM_PSRAM_TARGET_MHZ "220" CACHE STRING "Target PSRAM PIO clock in MHz, matching ISA-PicoMEM's DMA path")
@@ -88,6 +91,8 @@ if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
     set(PICOMEM_MODULE_SOURCE src/modules/register_view.cpp)
 elseif(PICOMEM_MODULE STREQUAL "MDA")
     set(PICOMEM_MODULE_SOURCE src/modules/mda_device.cpp)
+elseif(PICOMEM_MODULE STREQUAL "SAMPLE")
+    set(PICOMEM_MODULE_SOURCE src/modules/sample_device.cpp)
 else()
     message(FATAL_ERROR "Unknown PICOMEM_MODULE=${PICOMEM_MODULE}")
 endif()
@@ -107,8 +112,9 @@ target_include_directories(picomem PRIVATE
 target_compile_definitions(picomem PRIVATE
     PICOMEM_VERSION="${PROJECT_VERSION}"
     PICOMEM_SYS_CLK_KHZ=${PICOMEM_SYS_CLK_KHZ}
-    PICOMEM_TEMPLATE_IO_BASE=${PICOMEM_TEMPLATE_IO_BASE}
-    PICOMEM_TEMPLATE_MEM_BASE=${PICOMEM_TEMPLATE_MEM_BASE}
+    PICOMEM_SAMPLE_IO_BASE=${PICOMEM_SAMPLE_IO_BASE}
+    PICOMEM_SAMPLE_MEM_BASE=${PICOMEM_SAMPLE_MEM_BASE}
+    PICOMEM_SAMPLE_MEM_SNOOP_BASE=${PICOMEM_SAMPLE_MEM_SNOOP_BASE}
     PICO_DEFAULT_UART=0
     PICO_DEFAULT_UART_BAUD_RATE=115200
     PICO_DEFAULT_UART_TX_PIN=28
@@ -178,6 +184,8 @@ if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
     target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_REGISTER_VIEW=1)
 elseif(PICOMEM_MODULE STREQUAL "MDA")
     target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_MDA=1)
+elseif(PICOMEM_MODULE STREQUAL "SAMPLE")
+    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_SAMPLE=1)
 endif()
 
 if(PICOMEM_BOARD STREQUAL "PICOMEM_M1")
