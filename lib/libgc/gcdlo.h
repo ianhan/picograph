@@ -1,14 +1,23 @@
+#ifndef GCDLO_H
+#define GCDLO_H
+
+#include "gc.h"
+#include "libdlo.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-GCBOOL GCDisplayLinkCreate (
+GCBOOL GCDisplayLinkCreate(
     GC *pGC,
     dlo_dev_t uid);
 
-void GCDisplayLinkShutDown (GC *pGC);
+void GCDisplayLinkShutDown(GC *pGC);
 
+PGC GCDisplay(void);
 
 #ifdef __cplusplus
-};
+}
+#endif
+
 #endif

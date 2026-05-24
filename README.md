@@ -9,7 +9,7 @@ It intentionally does not port PicoGUS's GUS, SB, AdLib, MPU, USB, or NE2000 dev
 - `CMakeLists.txt`: Pico SDK build with `PICOMEM_MODULE` and `PICOMEM_BOARD` selection.
 - `src/framework`: module registry, mirroring PicoGUS's one-firmware-per-device model.
 - `src/hw`: PicoMEM ISA trap table and bus loop.
-- `src/modules/template_device.cpp`: a replaceable example module.
+- `src/modules/register_view.cpp`: passive VGA/MCGA register, POST, and palette display module.
 - `lib`: submodules for optional PSRAM and USB-host support.
 - `pio`: PicoMEM ISA PIO programs copied as hardware assets.
 - `docs/trap-map.md`: all I/O and memory spaces the PicoMEM trap fabric can expose.
@@ -25,7 +25,7 @@ Useful options:
 
 ```sh
 -DPICOMEM_BOARD=PICOMEM_M2
--DPICOMEM_MODULE=TEMPLATE
+-DPICOMEM_MODULE=REGISTER_VIEW
 -DPICOMEM_TEMPLATE_IO_BASE=0x300
 -DPICOMEM_TEMPLATE_MEM_BASE=0xd0000
 -DPICOMEM_ENABLE_USB_HOST=ON

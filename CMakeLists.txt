@@ -16,14 +16,13 @@ cmake_minimum_required(VERSION 3.13)
 
 set(PICO_BOARD "pico2" CACHE STRING "Pico SDK board target")
 set(PICOMEM_BOARD "PICOMEM_M1" CACHE STRING "PicoMEM hardware profile: PICOMEM_M1, PICOMEM_M2, PICOMEM_LP, PICOMEM_15")
-set(PICOMEM_MODULE "TEMPLATE" CACHE STRING "Single module to build into this firmware")
+set(PICOMEM_MODULE "MDA" CACHE STRING "Single module to build into this firmware")
 set(PICOMEM_SYS_CLK_KHZ "280000" CACHE STRING "RP2040/RP2350 system clock in kHz")
 set(PICOMEM_ENABLE_USB_HOST ON CACHE BOOL "Enable TinyUSB host support")
 set(PICOMEM_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
 set(PICOMEM_ENABLE_PSRAM ON CACHE BOOL "Enable rp2040-psram support")
 set(PICOMEM_ENABLE_DISPLAYLINK ON CACHE BOOL "Enable DisplayLink USB display support")
 set(PICOMEM_ENABLE_GC ON CACHE BOOL "Enable GC graphics support")
-set(PICOMEM_DISPLAYLINK_SCALE "2" CACHE STRING "Integer DisplayLink scale factor applied between GC and libdlo")
 set(PICOMEM_PSRAM_PIO "1" CACHE STRING "PIO block used by rp2040-psram")
 set(PICOMEM_PSRAM_SM "-1" CACHE STRING "PIO state machine for rp2040-psram, or -1 to claim one")
 set(PICOMEM_PSRAM_TARGET_MHZ "220" CACHE STRING "Target PSRAM PIO clock in MHz, matching ISA-PicoMEM's DMA path")
@@ -84,11 +83,20 @@ if(PICOMEM_ENABLE_GC)
     add_subdirectory(lib/libgc)
 endif()
 
+set(PICOMEM_MODULE_SOURCE "")
+if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
+    set(PICOMEM_MODULE_SOURCE src/modules/register_view.cpp)
+elseif(PICOMEM_MODULE STREQUAL "MDA")
+    set(PICOMEM_MODULE_SOURCE src/modules/mda_device.cpp)
+else()
+    message(FATAL_ERROR "Unknown PICOMEM_MODULE=${PICOMEM_MODULE}")
+endif()
+
 add_executable(picomem
     src/main.cpp
     src/framework/module_registry.cpp
     src/hw/picomem_bus.cpp
-    src/modules/template_device.cpp
+    ${PICOMEM_MODULE_SOURCE}
 )
 
 target_include_directories(picomem PRIVATE
@@ -101,7 +109,6 @@ target_compile_definitions(picomem PRIVATE
     PICOMEM_SYS_CLK_KHZ=${PICOMEM_SYS_CLK_KHZ}
     PICOMEM_TEMPLATE_IO_BASE=${PICOMEM_TEMPLATE_IO_BASE}
     PICOMEM_TEMPLATE_MEM_BASE=${PICOMEM_TEMPLATE_MEM_BASE}
-    PICOMEM_DISPLAYLINK_SCALE=${PICOMEM_DISPLAYLINK_SCALE}
     PICO_DEFAULT_UART=0
     PICO_DEFAULT_UART_BAUD_RATE=115200
     PICO_DEFAULT_UART_TX_PIN=28
@@ -167,10 +174,10 @@ else()
     target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_GC=0)
 endif()
 
-if(PICOMEM_MODULE STREQUAL "TEMPLATE")
-    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_TEMPLATE=1)
-else()
-    message(FATAL_ERROR "Unknown PICOMEM_MODULE=${PICOMEM_MODULE}")
+if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
+    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_REGISTER_VIEW=1)
+elseif(PICOMEM_MODULE STREQUAL "MDA")
+    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_MDA=1)
 endif()
 
 if(PICOMEM_BOARD STREQUAL "PICOMEM_M1")
