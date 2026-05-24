@@ -40,10 +40,6 @@ int main() {
     }
 #endif
 
-#if PICOMEM_ENABLE_USB_HOST
-    picomem::usb_host_start(false);
-#endif
-
     picomem::picomem_bus_init();
 
     if (module.init) {
@@ -79,6 +75,10 @@ int main() {
     }
 
     multicore_launch_core1(picomem::picomem_bus_loop);
+
+#if PICOMEM_ENABLE_USB_HOST
+    picomem::usb_host_start(false);
+#endif
 
     for (;;) {
         picomem::picomem_bus_task();

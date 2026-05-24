@@ -143,7 +143,7 @@ GCBOOL DLO_HWSetupDevice(GCDEVICE *pDevice, GCBITMAP *pDisplaySurface, void *par
         return GCFALSE;
     }
 
-    g_DLOScaleFactor = 1;
+    g_DLOScaleFactor = 2;
     pDisplaySurface->pGC = pDevice->pDisplay;
     GCInitializeBitmap(pDisplaySurface,
                        pMode->view.width / g_DLOScaleFactor,
