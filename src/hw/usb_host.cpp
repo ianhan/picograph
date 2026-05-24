@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "pico/time.h"
 #include "tusb.h"
 
 #if PICOMEM_ENABLE_XINPUT
@@ -17,6 +18,35 @@ namespace picomem {
 namespace {
 
 UsbHostState state;
+
+#ifndef PICOMEM_USB_HOST_START_DELAY_MS
+#define PICOMEM_USB_HOST_START_DELAY_MS 250u
+#endif
+
+constexpr uint16_t kDisplayLinkVid = 0x17e9;
+constexpr uint32_t kDisplayLinkRetryDelayMs = 250;
+constexpr uint32_t kDisplayLinkRetryWindowMs = 5000;
+
+bool tinyusb_started;
+uint32_t tinyusb_start_ms;
+
+#if PICOMEM_ENABLE_DISPLAYLINK
+bool displaylink_initialized;
+bool displaylink_configured;
+uint8_t displaylink_dev_addr;
+uint8_t pending_displaylink_dev_addr;
+uint8_t displaylink_attempts;
+uint32_t next_displaylink_attempt_ms;
+uint32_t displaylink_retry_deadline_ms;
+#endif
+
+uint32_t now_ms() {
+    return to_ms_since_boot(get_absolute_time());
+}
+
+bool time_reached(uint32_t deadline_ms) {
+    return static_cast<int32_t>(now_ms() - deadline_ms) >= 0;
+}
 
 const char *vendor_name(uint16_t vid) {
     switch (vid) {
@@ -71,22 +101,77 @@ void set_status(uint8_t dev_addr, const char *message) {
     printf("usb host: %s\n", state.device_message[dev_addr - 1]);
 }
 
-#if PICOMEM_ENABLE_DISPLAYLINK
-void handle_displaylink_mount(uint8_t dev_addr) {
-    static bool initialized = false;
-
-    if (!initialized) {
-        dlo_init_t init_flags = {0};
-        initialized = (dlo_init(init_flags) == dlo_ok);
+bool start_tinyusb_host() {
+    if (tinyusb_started) {
+        return true;
     }
-    if (!initialized || dlo_check_device(dev_addr) != dlo_ok) {
-        return;
+
+    if (!tuh_init(BOARD_TUH_RHPORT)) {
+        printf("usb host: failed to start on rhport %d\n", BOARD_TUH_RHPORT);
+        return false;
+    }
+
+    tinyusb_started = true;
+    printf("usb host: started on rhport %d\n", BOARD_TUH_RHPORT);
+    return true;
+}
+
+#if PICOMEM_ENABLE_DISPLAYLINK
+void clear_displaylink_retry(uint8_t dev_addr) {
+    if (pending_displaylink_dev_addr == dev_addr) {
+        pending_displaylink_dev_addr = 0;
+        displaylink_attempts = 0;
+    }
+}
+
+void schedule_displaylink_retry(uint8_t dev_addr) {
+    pending_displaylink_dev_addr = dev_addr;
+    next_displaylink_attempt_ms = now_ms() + kDisplayLinkRetryDelayMs;
+    if (displaylink_retry_deadline_ms == 0) {
+        displaylink_retry_deadline_ms = now_ms() + kDisplayLinkRetryWindowMs;
+    }
+}
+
+bool handle_displaylink_mount(uint8_t dev_addr) {
+    uint16_t vid = 0;
+    uint16_t pid = 0;
+    tuh_vid_pid_get(dev_addr, &vid, &pid);
+    if (vid != kDisplayLinkVid) {
+        return true;
+    }
+
+    if (displaylink_configured) {
+        return true;
+    }
+
+    if (!displaylink_initialized) {
+        dlo_init_t init_flags = {0};
+        dlo_retcode_t init_result = dlo_init(init_flags);
+        displaylink_initialized = (init_result == dlo_ok);
+        if (!displaylink_initialized) {
+            printf("usb host: DisplayLink init failed err=%u\n", static_cast<unsigned>(init_result));
+            return false;
+        }
+    }
+
+    dlo_retcode_t check_result = dlo_check_device(dev_addr);
+    if (check_result != dlo_ok) {
+        printf("usb host: DisplayLink check failed dev=%u vid=%04x pid=%04x err=%u\n",
+               dev_addr,
+               vid,
+               pid,
+               static_cast<unsigned>(check_result));
+        return false;
     }
 
     dlo_claim_t claim_flags = {0};
     dlo_dev_t uid = dlo_claim_first_device(claim_flags, 0);
     if (!uid) {
-        return;
+        printf("usb host: DisplayLink claim failed dev=%u vid=%04x pid=%04x\n",
+               dev_addr,
+               vid,
+               pid);
+        return false;
     }
 
     dlo_fill_rect(uid, nullptr, nullptr, DLO_RGB(0, 0, 0));
@@ -95,6 +180,40 @@ void handle_displaylink_mount(uint8_t dev_addr) {
         dlo_device_configured(uid);
     }
     set_status(dev_addr, "DisplayLink display");
+    displaylink_configured = true;
+    displaylink_dev_addr = dev_addr;
+    clear_displaylink_retry(dev_addr);
+    displaylink_retry_deadline_ms = 0;
+    return true;
+}
+
+void retry_displaylink_mount() {
+    if (pending_displaylink_dev_addr == 0 || !time_reached(next_displaylink_attempt_ms)) {
+        return;
+    }
+
+    uint8_t dev_addr = pending_displaylink_dev_addr;
+    if (!tuh_mounted(dev_addr)) {
+        clear_displaylink_retry(dev_addr);
+        displaylink_retry_deadline_ms = 0;
+        return;
+    }
+
+    if (handle_displaylink_mount(dev_addr)) {
+        return;
+    }
+
+    ++displaylink_attempts;
+    if (time_reached(displaylink_retry_deadline_ms)) {
+        printf("usb host: DisplayLink setup timed out dev=%u attempts=%u\n",
+               dev_addr,
+               displaylink_attempts);
+        clear_displaylink_retry(dev_addr);
+        displaylink_retry_deadline_ms = 0;
+        return;
+    }
+
+    next_displaylink_attempt_ms = now_ms() + kDisplayLinkRetryDelayMs;
 }
 #endif
 
@@ -141,13 +260,19 @@ bool usb_host_start(bool serial_usb_active) {
         return false;
     }
 
-    tuh_init(BOARD_TUH_RHPORT);
     state.enabled = true;
-    printf("usb host: started on rhport %d\n", BOARD_TUH_RHPORT);
+    tinyusb_start_ms = now_ms() + static_cast<uint32_t>(PICOMEM_USB_HOST_START_DELAY_MS);
+    printf("usb host: scheduled on rhport %d after %u ms\n",
+           BOARD_TUH_RHPORT,
+           static_cast<unsigned>(PICOMEM_USB_HOST_START_DELAY_MS));
     return true;
 }
 
 void usb_host_stop() {
+    if (tinyusb_started) {
+        tuh_deinit(BOARD_TUH_RHPORT);
+        tinyusb_started = false;
+    }
     state.enabled = false;
 }
 
@@ -155,7 +280,21 @@ void usb_host_task() {
     if (!state.enabled) {
         return;
     }
+
+    if (!tinyusb_started) {
+        if (!time_reached(tinyusb_start_ms)) {
+            return;
+        }
+        if (!start_tinyusb_host()) {
+            tinyusb_start_ms = now_ms() + 1000;
+            return;
+        }
+    }
+
     tuh_task();
+#if PICOMEM_ENABLE_DISPLAYLINK
+    retry_displaylink_mount();
+#endif
 }
 
 const UsbHostState &usb_host_state() {
@@ -168,13 +307,22 @@ extern "C" void tuh_mount_cb(uint8_t dev_addr) {
     (void)dev_addr;
     picomem::refresh_mount_count();
 #if PICOMEM_ENABLE_DISPLAYLINK
-    picomem::handle_displaylink_mount(dev_addr);
+    if (!picomem::handle_displaylink_mount(dev_addr)) {
+        picomem::schedule_displaylink_retry(dev_addr);
+    }
 #endif
 }
 
 extern "C" void tuh_umount_cb(uint8_t dev_addr) {
     (void)dev_addr;
     picomem::refresh_mount_count();
+#if PICOMEM_ENABLE_DISPLAYLINK
+    picomem::clear_displaylink_retry(dev_addr);
+    if (picomem::displaylink_dev_addr == dev_addr) {
+        picomem::displaylink_configured = false;
+        picomem::displaylink_dev_addr = 0;
+    }
+#endif
 }
 
 extern "C" void tuh_hid_mount_cb(uint8_t dev_addr,

@@ -215,7 +215,7 @@ dlo_retcode_t dlo_check_device(uint8_t daddr)
   static char     string[255] = {0};
   dlo_retcode_t   err      = dlo_ok;
   dlo_device_t   *dev      = NULL;
-  uint8_t         buf[4];
+  uint8_t         buf[4] = {0};
   dlo_devtype_t   type;
 
   uint16_t PID, VID;
@@ -252,6 +252,7 @@ dlo_retcode_t dlo_check_device(uint8_t daddr)
   };
   
   TBERR_GOTO(tuh_control_xfer(&xfer));
+  TXERR_GOTO(xfer.result);
 
   /* Ask the device for some status information */
   //DPRINTF("usb: check: type buf[3] = &%X\n", buf[3]);
@@ -423,7 +424,7 @@ uint8_t parse_config_descriptor(uint8_t dev_addr, tusb_desc_configuration_t cons
 
 dlo_retcode_t dlo_usb_open(dlo_device_t * const dev)
 {
-  dlo_retcode_t   err;
+  dlo_retcode_t   err = dlo_ok;
   uint8_t daddr = dev->cnct->udev;
   uint16_t temp_buf[128];
   
@@ -432,6 +433,15 @@ dlo_retcode_t dlo_usb_open(dlo_device_t * const dev)
   {
     /* Use dev->cnct->uhand for the endpoint address */
     dev->cnct->uhand = parse_config_descriptor(daddr, (tusb_desc_configuration_t*) temp_buf);
+  }
+  else
+  {
+    return dlo_err_usb;
+  }
+
+  if (!dev->cnct->uhand)
+  {
+    return dlo_err_open;
   }
 
   /* Mark the device as claimed */
