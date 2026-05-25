@@ -198,7 +198,7 @@ const est_timing_t est_timings[24] =
  *  
  *  @return refresh rate in hertz
  */
-inline uint8_t refresh_hz_from_edid(edid_detail_unpacked_t const * edid) {
+static inline uint8_t refresh_hz_from_edid(edid_detail_unpacked_t const * edid) {
   return (uint8_t)(edid->pixelClock10KHz*10000/
     ((edid->hBlanking + edid->hActive)*(edid->vBlanking + edid->vActive)))+0.5;
 }
@@ -504,8 +504,8 @@ dlo_retcode_t dlo_mode_parse_edid(dlo_device_t * const dev, const uint8_t * cons
   edid->ext_blocks = RD_B(ptr + 0x7E);
 
   /* Parse all of the standard timing identification */
-  for (i = 0; i < sizeof(edid->std_timings.timing_id); i++)
-    edid->std_timings.timing_id[i] = RD_B(ptr + 0x26 + i);
+  for (i = 0; i < sizeof(edid->std_timings.timing_id) / sizeof(edid->std_timings.timing_id[0]); i++)
+    edid->std_timings.timing_id[i] = LETOHS(RD_S(ptr + 0x26 + (i * 2)));
 
   /* Parse all of the detailed timing descriptions (monitor descriptors not supported) */
   for (i = 0; i < 4; i++) {
@@ -613,7 +613,7 @@ static uint16_t lfsr16(uint16_t v)
   return (uint16_t) _v;
 }
 
-inline dlo_retcode_t vreg_big_endian(dlo_device_t * const dev, uint8_t reg, uint16_t val){
+static inline dlo_retcode_t vreg_big_endian(dlo_device_t * const dev, uint8_t reg, uint16_t val){
 
   if (IS_BIGENDIAN()) {
     val = swap_endian_s(val);
@@ -625,7 +625,7 @@ inline dlo_retcode_t vreg_big_endian(dlo_device_t * const dev, uint8_t reg, uint
   return dlo_ok;
 }
 
-inline dlo_retcode_t vreg_little_endian(dlo_device_t * const dev, uint8_t reg, uint16_t val){
+static inline dlo_retcode_t vreg_little_endian(dlo_device_t * const dev, uint8_t reg, uint16_t val){
 
 
   if (IS_BIGENDIAN()) {
@@ -638,7 +638,7 @@ inline dlo_retcode_t vreg_little_endian(dlo_device_t * const dev, uint8_t reg, u
   return dlo_ok;
 }
 
-inline dlo_retcode_t vreg_lfsr16(dlo_device_t * const dev, uint8_t reg, uint16_t val){
+static inline dlo_retcode_t vreg_lfsr16(dlo_device_t * const dev, uint8_t reg, uint16_t val){
 
   uint16_t lsfr_shifted = lfsr16(val);
 

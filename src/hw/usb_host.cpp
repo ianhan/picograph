@@ -106,7 +106,12 @@ bool start_tinyusb_host() {
         return true;
     }
 
-    if (!tuh_init(BOARD_TUH_RHPORT)) {
+    const tusb_rhport_init_t rh_init = {
+        TUSB_ROLE_HOST,
+        TUH_OPT_HIGH_SPEED ? TUSB_SPEED_HIGH : TUSB_SPEED_FULL,
+    };
+
+    if (!tusb_init(BOARD_TUH_RHPORT, &rh_init)) {
         printf("usb host: failed to start on rhport %d\n", BOARD_TUH_RHPORT);
         return false;
     }

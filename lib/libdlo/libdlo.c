@@ -478,7 +478,7 @@ static const char* parse_cmdline(int *argc_p, char *argv[])
   }
 
   for (n=1; n<*argc_p; ++n) {
-    const char* arg = argv[n];
+    char* arg = argv[n];
     if (strncmp(arg,"--dlo:",6)==0) {
       const char* dlo_arg = arg + 6;
       if (strncmp(dlo_arg,"display=",8)==0) {

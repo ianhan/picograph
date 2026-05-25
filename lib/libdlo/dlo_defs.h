@@ -25,6 +25,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef DEBUG
 
@@ -79,14 +80,28 @@
 
 #endif
 
+static inline uint32_t dlo_rd_u32_unaligned(const void *ptr)
+{
+  uint32_t val;
+  memcpy(&val, ptr, sizeof(val));
+  return val;
+}
+
+static inline uint16_t dlo_rd_u16_unaligned(const void *ptr)
+{
+  uint16_t val;
+  memcpy(&val, ptr, sizeof(val));
+  return val;
+}
+
 /** Read an unsigned 32 bit value from the address given (may be unaligned). */
-#define RD_L(ptr) (*(__packed uint32_t *)(ptr))
+#define RD_L(ptr) dlo_rd_u32_unaligned(ptr)
 
 /** Read an unsigned 16 bit value from the address given (may be unaligned). */
-#define RD_S(ptr) (*(__packed uint16_t *)(ptr))
+#define RD_S(ptr) dlo_rd_u16_unaligned(ptr)
 
 /** Read an unsigned byte from the address given. */
-#define RD_B(ptr) (*(uint8_t *)(ptr))
+#define RD_B(ptr) (*(const uint8_t *)(ptr))
 
 /** Surpress warnings about unused variables. */
 #define IGNORE(x) do { (void) (x); } while (0)
