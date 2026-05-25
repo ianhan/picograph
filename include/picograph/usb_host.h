@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-namespace picomem {
+namespace picograph {
 
 struct UsbKeyboardState {
     uint8_t modifier;
@@ -52,4 +52,4 @@ void usb_host_stop();
 void usb_host_task();
 const UsbHostState &usb_host_state();
 
-}  // namespace picomem
+}  // namespace picograph

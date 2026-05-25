@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace picomem {
+namespace picograph {
 
 struct IoTrap {
     uint16_t base;
@@ -50,4 +50,4 @@ struct Module {
 
 const Module &active_module();
 
-}  // namespace picomem
+}  // namespace picograph

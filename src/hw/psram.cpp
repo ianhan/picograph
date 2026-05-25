@@ -1,4 +1,4 @@
-#include "picomem/psram.h"
+#include "picograph/psram.h"
 
 #include <stdio.h>
 
@@ -13,7 +13,7 @@ psram_spi_inst_t *async_spi_inst;
 }
 #endif
 
-namespace picomem {
+namespace picograph {
 namespace {
 
 psram_spi_inst_t psram_spi;
@@ -21,12 +21,12 @@ bool available;
 uint8_t size_mb;
 
 PIO psram_pio() {
-#if PICOMEM_PSRAM_PIO == 0
+#if PICOGRAPH_PSRAM_PIO == 0
     return pio0;
-#elif PICOMEM_PSRAM_PIO == 1
+#elif PICOGRAPH_PSRAM_PIO == 1
     return pio1;
 #else
-#error "PICOMEM_PSRAM_PIO must be 0 or 1"
+#error "PICOGRAPH_PSRAM_PIO must be 0 or 1"
 #endif
 }
 
@@ -37,10 +37,10 @@ uint8_t psram_start() {
         return size_mb;
     }
 
-    float div = static_cast<float>(clock_get_hz(clk_sys)) / (PICOMEM_PSRAM_TARGET_MHZ * 1000000.0f);
-    printf("psram: target=%d MHz div=%f\n", PICOMEM_PSRAM_TARGET_MHZ, div);
+    float div = static_cast<float>(clock_get_hz(clk_sys)) / (PICOGRAPH_PSRAM_TARGET_MHZ * 1000000.0f);
+    printf("psram: target=%d MHz div=%f\n", PICOGRAPH_PSRAM_TARGET_MHZ, div);
 
-    psram_spi = psram_spi_init_clkdiv(psram_pio(), PICOMEM_PSRAM_SM, div, true);
+    psram_spi = psram_spi_init_clkdiv(psram_pio(), PICOGRAPH_PSRAM_SM, div, true);
 
     gpio_set_drive_strength(PSRAM_PIN_CS, GPIO_DRIVE_STRENGTH_8MA);
     gpio_set_drive_strength(PSRAM_PIN_SCK, GPIO_DRIVE_STRENGTH_8MA);
@@ -71,7 +71,7 @@ uint8_t psram_start() {
     available = true;
     printf("psram: ok, %u MB pio=%d sm=%d cs=%d sck=%d mosi=%d miso=%d\n",
            size_mb,
-           PICOMEM_PSRAM_PIO,
+           PICOGRAPH_PSRAM_PIO,
            psram_spi.sm,
            PSRAM_PIN_CS,
            PSRAM_PIN_SCK,
@@ -116,4 +116,4 @@ void psram_write(uint32_t address, const uint8_t *data, size_t length) {
     ::psram_write(&psram_spi, address, data, length);
 }
 
-}  // namespace picomem
+}  // namespace picograph

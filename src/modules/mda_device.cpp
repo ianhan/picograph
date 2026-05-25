@@ -1,4 +1,4 @@
-#include "picomem/module.h"
+#include "picograph/module.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -10,11 +10,11 @@
 #include "modules/dlodirty.h"
 #include "mda_font_rom.h"
 
-namespace picomem {
+namespace picograph {
 namespace {
 
-#if !PICOMEM_ENABLE_DISPLAYLINK || !PICOMEM_ENABLE_GC
-#error "The MDA module requires PICOMEM_ENABLE_DISPLAYLINK and PICOMEM_ENABLE_GC"
+#if !PICOGRAPH_ENABLE_DISPLAYLINK || !PICOGRAPH_ENABLE_GC
+#error "The MDA module requires PICOGRAPH_ENABLE_DISPLAYLINK and PICOGRAPH_ENABLE_GC"
 #endif
 
 constexpr uint32_t kMdaMemBase = 0xb0000;
@@ -29,6 +29,15 @@ constexpr unsigned kGlyphWidth = 8;
 constexpr unsigned kFontSlotHeight = 16;
 constexpr unsigned kCrtcAddressMask = 0x3fff;
 constexpr unsigned kMdaCellStorage = kMdaMemSize / 2;
+constexpr int kDisplayGreen = 3;
+constexpr int kDisplayAmber = 4;
+constexpr int kDisplayWhite = 5;
+
+#ifndef PICOGRAPH_MONOCHROME_DISPLAY_COLOR
+#define PICOGRAPH_MONOCHROME_DISPLAY_COLOR kDisplayWhite
+#endif
+
+constexpr int kMonochromeDisplayColor = PICOGRAPH_MONOCHROME_DISPLAY_COLOR;
 
 uint16_t mda_cells[kMdaCellStorage];
 volatile uint8_t dirty_cells[kCellCount];
@@ -54,24 +63,47 @@ uint32_t handled_full_redraw_request;
 uint32_t handled_attr_high_dirty_request;
 DloDirtyDisplay display;
 
-const GCCOLOR kTextPalette[16] = {
-    RGB(0x00, 0x00, 0x00),
-    RGB(0x00, 0x00, 0xaa),
-    RGB(0x00, 0xaa, 0x00),
-    RGB(0x00, 0xaa, 0xaa),
-    RGB(0xaa, 0x00, 0x00),
-    RGB(0xaa, 0x00, 0xaa),
-    RGB(0xaa, 0x55, 0x00),
-    RGB(0xaa, 0xaa, 0xaa),
-    RGB(0x55, 0x55, 0x55),
-    RGB(0x55, 0x55, 0xff),
-    RGB(0x55, 0xff, 0x55),
-    RGB(0x55, 0xff, 0xff),
-    RGB(0xff, 0x55, 0x55),
-    RGB(0xff, 0x55, 0xff),
-    RGB(0xff, 0xff, 0x55),
-    RGB(0xff, 0xff, 0xff),
-};
+GCCOLOR makecol(uint8_t r, uint8_t g, uint8_t b)
+{
+    return RGB(r, g, b);
+}
+
+GCCOLOR monochrome_level_color(uint8_t level)
+{
+    switch (kMonochromeDisplayColor) {
+    case kDisplayGreen:
+        switch (level) {
+        case 0: return makecol(0x00, 0x00, 0x00);
+        case 1: return makecol(0x08, 0xc7, 0x2c);
+        case 2: return makecol(0x04, 0x8a, 0x20);
+        default: return makecol(0x34, 0xff, 0x5d);
+        }
+    case kDisplayAmber:
+        switch (level) {
+        case 0: return makecol(0x00, 0x00, 0x00);
+        case 1: return makecol(0xef, 0x79, 0x00);
+        case 2: return makecol(0xb2, 0x4d, 0x00);
+        default: return makecol(0xff, 0xe3, 0x34);
+        }
+    case kDisplayWhite:
+    default:
+        switch (level) {
+        case 0: return makecol(0x00, 0x00, 0x00);
+        case 1: return makecol(0xaf, 0xb3, 0xb0);
+        case 2: return makecol(0x7a, 0x81, 0x83);
+        default: return makecol(0xff, 0xfd, 0xed);
+        }
+    }
+}
+
+GCCOLOR mda_text_color(uint8_t attr_nibble)
+{
+    attr_nibble &= 0x0fu;
+    if (attr_nibble == 0) {
+        return monochrome_level_color(0);
+    }
+    return monochrome_level_color((attr_nibble & 0x08u) ? 3 : 1);
+}
 
 void reset_crtc()
 {
@@ -454,8 +486,8 @@ void draw_cell(DloDirtyDisplay::RenderContext *ctx, unsigned cell, uint8_t phase
     bool blink_area = blink_enabled && (attr & 0x80u) && (phase & 0x02u);
     long cell_x = origin_x + (long)(cell % kColumns) * cell_width;
     long cell_y = origin_y + (long)(cell / kColumns) * cell_height;
-    GCCOLOR fg_color = kTextPalette[fg];
-    GCCOLOR bg_color = kTextPalette[bg];
+    GCCOLOR fg_color = mda_text_color(fg);
+    GCCOLOR bg_color = mda_text_color(bg);
     unsigned current_character_height = character_height();
 
     display.fill(ctx, cell_x, cell_y, cell_width, cell_height, bg_color);
@@ -637,4 +669,4 @@ const Module &mda_module()
     return module;
 }
 
-}  // namespace picomem
+}  // namespace picograph

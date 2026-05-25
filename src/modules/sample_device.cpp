@@ -1,18 +1,18 @@
-#include "picomem/module.h"
+#include "picograph/module.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
-namespace picomem {
+namespace picograph {
 namespace {
 
-constexpr uint16_t kIoBase = static_cast<uint16_t>(PICOMEM_SAMPLE_IO_BASE);
+constexpr uint16_t kIoBase = static_cast<uint16_t>(PICOGRAPH_SAMPLE_IO_BASE);
 constexpr uint16_t kIoLength = 0x8;
-constexpr uint32_t kMemBase = static_cast<uint32_t>(PICOMEM_SAMPLE_MEM_BASE);
+constexpr uint32_t kMemBase = static_cast<uint32_t>(PICOGRAPH_SAMPLE_MEM_BASE);
 constexpr uint32_t kMemLength = 0x2000u;
 constexpr uint16_t kPostPort = 0x80;
-constexpr uint32_t kMemSnoopBase = static_cast<uint32_t>(PICOMEM_SAMPLE_MEM_SNOOP_BASE);
+constexpr uint32_t kMemSnoopBase = static_cast<uint32_t>(PICOGRAPH_SAMPLE_MEM_SNOOP_BASE);
 constexpr uint32_t kMemSnoopLength = 0x2000u;
 
 uint8_t selected_register;
@@ -265,4 +265,4 @@ const Module &sample_module()
     return module;
 }
 
-}  // namespace picomem
+}  // namespace picograph

@@ -1,4 +1,4 @@
-#include "picomem/module.h"
+#include "picograph/module.h"
 
 #include "modules/dlodirty.h"
 #include "pcem_mda_rom.h"
@@ -12,11 +12,11 @@
 #include <cstdio>
 #include <cstring>
 
-namespace picomem {
+namespace picograph {
 namespace {
 
-#if !PICOMEM_ENABLE_DISPLAYLINK || !PICOMEM_ENABLE_GC
-#error "The Hercules module requires PICOMEM_ENABLE_DISPLAYLINK and PICOMEM_ENABLE_GC"
+#if !PICOGRAPH_ENABLE_DISPLAYLINK || !PICOGRAPH_ENABLE_GC
+#error "The Hercules module requires PICOGRAPH_ENABLE_DISPLAYLINK and PICOGRAPH_ENABLE_GC"
 #endif
 
 constexpr uint16_t kHercIoBase = 0x03b0;
@@ -40,8 +40,8 @@ constexpr int DISPLAY_GREEN = 3;
 constexpr int DISPLAY_AMBER = 4;
 constexpr int DISPLAY_WHITE = 5;
 
-#ifndef PICOMEM_HERCULES_DISPLAY_TYPE
-#define PICOMEM_HERCULES_DISPLAY_TYPE DISPLAY_WHITE
+#ifndef PICOGRAPH_MONOCHROME_DISPLAY_COLOR
+#define PICOGRAPH_MONOCHROME_DISPLAY_COLOR DISPLAY_WHITE
 #endif
 
 typedef struct hercules_t {
@@ -693,8 +693,8 @@ uint32_t hercules_poll(hercules_t *h, RenderContext *ctx)
                                       (unsigned)xsize,
                                       (unsigned)ysize,
                                       1,
-                                      PICOMEM_DISPLAYLINK_WIDTH,
-                                      PICOMEM_DISPLAYLINK_HEIGHT);
+                                      PICOGRAPH_DISPLAYLINK_WIDTH,
+                                      PICOGRAPH_DISPLAYLINK_HEIGHT);
 
                 frames++;
                 if (graphics_mode(h)) {
@@ -874,7 +874,7 @@ void init()
     display.reset(kMaxPcemWidth, kMaxPcemLines, line_buffer, "hercules");
 
     loadfont_mda_from_rom();
-    cgapal_rebuild(PICOMEM_HERCULES_DISPLAY_TYPE, 0);
+    cgapal_rebuild(PICOGRAPH_MONOCHROME_DISPLAY_COLOR, 0);
     build_mdacols();
     handled_frame_invalidate_requests = 0;
     __atomic_store_n(&frame_invalidate_requests, 1u, __ATOMIC_RELEASE);
@@ -941,4 +941,4 @@ const Module &hercules_module()
     return module;
 }
 
-}  // namespace picomem
+}  // namespace picograph

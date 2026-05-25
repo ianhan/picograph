@@ -15,46 +15,46 @@ endif()
 cmake_minimum_required(VERSION 3.13)
 
 set(PICO_BOARD "pico2" CACHE STRING "Pico SDK board target")
-set(PICOMEM_BOARD "PICOMEM_M1" CACHE STRING "PicoMEM hardware profile: PICOMEM_M1, PICOMEM_M2, PICOMEM_LP, PICOMEM_15")
-set(PICOMEM_MODULE "HERCULES" CACHE STRING "Single module to build into this firmware")
-set(PICOMEM_SYS_CLK_KHZ "280000" CACHE STRING "RP2040/RP2350 system clock in kHz")
-set(PICOMEM_ENABLE_USB_HOST ON CACHE BOOL "Enable TinyUSB host support")
-set(PICOMEM_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
-set(PICOMEM_ENABLE_PSRAM OFF CACHE BOOL "Enable rp2040-psram support")
-set(PICOMEM_ENABLE_DISPLAYLINK ON CACHE BOOL "Enable DisplayLink USB display support")
-set(PICOMEM_ENABLE_GC ON CACHE BOOL "Enable GC graphics support")
-set(PICOMEM_DISPLAYLINK_WIDTH_DEFAULT "720")
-set(PICOMEM_DISPLAYLINK_HEIGHT_DEFAULT "400")
-set(PICOMEM_DISPLAYLINK_REFRESH_DEFAULT "70")
-if(PICOMEM_MODULE STREQUAL "EGA")
-    set(PICOMEM_DISPLAYLINK_WIDTH_DEFAULT "640")
-    set(PICOMEM_DISPLAYLINK_HEIGHT_DEFAULT "480")
-    set(PICOMEM_DISPLAYLINK_REFRESH_DEFAULT "60")
+set(PICOGRAPH_BOARD "PICOMEM_M1" CACHE STRING "PicoMEM hardware profile: PICOMEM_M1, PICOMEM_M2, PICOMEM_LP, PICOMEM_15")
+set(PICOGRAPH_MODULE "HERCULES" CACHE STRING "Single module to build into this firmware")
+set(PICOGRAPH_SYS_CLK_KHZ "280000" CACHE STRING "RP2040/RP2350 system clock in kHz")
+set(PICOGRAPH_ENABLE_USB_HOST ON CACHE BOOL "Enable TinyUSB host support")
+set(PICOGRAPH_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
+set(PICOGRAPH_ENABLE_PSRAM OFF CACHE BOOL "Enable rp2040-psram support")
+set(PICOGRAPH_ENABLE_DISPLAYLINK ON CACHE BOOL "Enable DisplayLink USB display support")
+set(PICOGRAPH_ENABLE_GC ON CACHE BOOL "Enable GC graphics support")
+set(PICOGRAPH_DISPLAYLINK_WIDTH_DEFAULT "720")
+set(PICOGRAPH_DISPLAYLINK_HEIGHT_DEFAULT "400")
+set(PICOGRAPH_DISPLAYLINK_REFRESH_DEFAULT "70")
+if(PICOGRAPH_MODULE STREQUAL "EGA")
+    set(PICOGRAPH_DISPLAYLINK_WIDTH_DEFAULT "640")
+    set(PICOGRAPH_DISPLAYLINK_HEIGHT_DEFAULT "480")
+    set(PICOGRAPH_DISPLAYLINK_REFRESH_DEFAULT "60")
 endif()
-set(PICOMEM_DISPLAYLINK_WIDTH "${PICOMEM_DISPLAYLINK_WIDTH_DEFAULT}" CACHE STRING "DisplayLink output mode width")
-set(PICOMEM_DISPLAYLINK_HEIGHT "${PICOMEM_DISPLAYLINK_HEIGHT_DEFAULT}" CACHE STRING "DisplayLink output mode height")
-set(PICOMEM_DISPLAYLINK_REFRESH "${PICOMEM_DISPLAYLINK_REFRESH_DEFAULT}" CACHE STRING "DisplayLink output mode refresh rate")
-set(PICOMEM_HERCULES_DISPLAY_TYPE "GREEN" CACHE STRING "Hercules display type: WHITE, GREEN, AMBER, RGB, RGB_NO_BROWN")
-set(PICOMEM_EGA_MEMORY_KB "256" CACHE STRING "EGA memory size: 64, 128, 256")
-set(PICOMEM_EGA_MONITOR_TYPE "COLOR_ECD" CACHE STRING "EGA monitor type: COLOR_40, COLOR_80, COLOR_ECD, MONO_WHITE, MONO_GREEN, MONO_AMBER")
-set(PICOMEM_SAMPLE_IO_BASE "0x300" CACHE STRING "Base I/O port for the sample module")
-set(PICOMEM_SAMPLE_MEM_BASE "0xd0000" CACHE STRING "Base memory address for the sample module trap window")
-set(PICOMEM_SAMPLE_MEM_SNOOP_BASE "0xb8000" CACHE STRING "Base memory address for the sample module write snoop")
-set(PICOMEM_PSRAM_PIO "1" CACHE STRING "PIO block used by rp2040-psram")
-set(PICOMEM_PSRAM_SM "-1" CACHE STRING "PIO state machine for rp2040-psram, or -1 to claim one")
-set(PICOMEM_PSRAM_TARGET_MHZ "220" CACHE STRING "Target PSRAM PIO clock in MHz, matching ISA-PicoMEM's DMA path")
-set(PICOMEM_PSRAM_PIN_CS "5" CACHE STRING "PSRAM chip-select GPIO")
-set(PICOMEM_PSRAM_PIN_SCK "6" CACHE STRING "PSRAM clock GPIO")
-set(PICOMEM_PSRAM_PIN_MOSI "7" CACHE STRING "PSRAM MOSI GPIO")
-set(PICOMEM_PSRAM_PIN_MISO "4" CACHE STRING "PSRAM MISO GPIO")
+set(PICOGRAPH_DISPLAYLINK_WIDTH "${PICOGRAPH_DISPLAYLINK_WIDTH_DEFAULT}" CACHE STRING "DisplayLink output mode width")
+set(PICOGRAPH_DISPLAYLINK_HEIGHT "${PICOGRAPH_DISPLAYLINK_HEIGHT_DEFAULT}" CACHE STRING "DisplayLink output mode height")
+set(PICOGRAPH_DISPLAYLINK_REFRESH "${PICOGRAPH_DISPLAYLINK_REFRESH_DEFAULT}" CACHE STRING "DisplayLink output mode refresh rate")
+set(PICOGRAPH_MONOCHROME_DISPLAY_COLOR "GREEN" CACHE STRING "Monochrome display color: WHITE, GREEN, AMBER")
+set(PICOGRAPH_EGA_MEMORY_KB "256" CACHE STRING "EGA memory size: 64, 128, 256")
+set(PICOGRAPH_EGA_MONITOR_TYPE "COLOR_ECD" CACHE STRING "EGA monitor type: COLOR_40, COLOR_80, COLOR_ECD, MONO")
+set(PICOGRAPH_SAMPLE_IO_BASE "0x300" CACHE STRING "Base I/O port for the sample module")
+set(PICOGRAPH_SAMPLE_MEM_BASE "0xd0000" CACHE STRING "Base memory address for the sample module trap window")
+set(PICOGRAPH_SAMPLE_MEM_SNOOP_BASE "0xb8000" CACHE STRING "Base memory address for the sample module write snoop")
+set(PICOGRAPH_PSRAM_PIO "1" CACHE STRING "PIO block used by rp2040-psram")
+set(PICOGRAPH_PSRAM_SM "-1" CACHE STRING "PIO state machine for rp2040-psram, or -1 to claim one")
+set(PICOGRAPH_PSRAM_TARGET_MHZ "220" CACHE STRING "Target PSRAM PIO clock in MHz, matching ISA-PicoMEM's DMA path")
+set(PICOGRAPH_PSRAM_PIN_CS "5" CACHE STRING "PSRAM chip-select GPIO")
+set(PICOGRAPH_PSRAM_PIN_SCK "6" CACHE STRING "PSRAM clock GPIO")
+set(PICOGRAPH_PSRAM_PIN_MOSI "7" CACHE STRING "PSRAM MOSI GPIO")
+set(PICOGRAPH_PSRAM_PIN_MISO "4" CACHE STRING "PSRAM MISO GPIO")
 
-if(PICOMEM_ENABLE_USB_HOST)
+if(PICOGRAPH_ENABLE_USB_HOST)
     set(PICO_TINYUSB_PATH ${CMAKE_CURRENT_LIST_DIR}/lib/tinyusb CACHE PATH "TinyUSB checkout used by the Pico SDK" FORCE)
 endif()
 
 include(pico_sdk_import.cmake)
 
-project(picomem
+project(picograph
     VERSION 0.1.0
     LANGUAGES C CXX ASM
 )
@@ -62,86 +62,86 @@ project(picomem
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type")
-set_property(CACHE PICOMEM_MODULE PROPERTY STRINGS REGISTER_VIEW HERCULES EGA MDA SAMPLE)
-set_property(CACHE PICOMEM_HERCULES_DISPLAY_TYPE PROPERTY STRINGS WHITE GREEN AMBER RGB RGB_NO_BROWN)
-set_property(CACHE PICOMEM_EGA_MEMORY_KB PROPERTY STRINGS 64 128 256)
-set_property(CACHE PICOMEM_EGA_MONITOR_TYPE PROPERTY STRINGS COLOR_40 COLOR_80 COLOR_ECD MONO_WHITE MONO_GREEN MONO_AMBER)
+set_property(CACHE PICOGRAPH_MODULE PROPERTY STRINGS REGISTER_VIEW HERCULES EGA MDA SAMPLE)
+set_property(CACHE PICOGRAPH_MONOCHROME_DISPLAY_COLOR PROPERTY STRINGS WHITE GREEN AMBER)
+set_property(CACHE PICOGRAPH_EGA_MEMORY_KB PROPERTY STRINGS 64 128 256)
+set_property(CACHE PICOGRAPH_EGA_MONITOR_TYPE PROPERTY STRINGS COLOR_40 COLOR_80 COLOR_ECD MONO)
 
 pico_sdk_init()
 
-if(PICOMEM_ENABLE_USB_HOST)
+if(PICOGRAPH_ENABLE_USB_HOST)
     if(NOT EXISTS ${PICO_TINYUSB_PATH}/src/tusb.h)
-        message(FATAL_ERROR "PICOMEM_ENABLE_USB_HOST requires the lib/tinyusb submodule")
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_USB_HOST requires the lib/tinyusb submodule")
     endif()
-    if(PICOMEM_ENABLE_XINPUT)
+    if(PICOGRAPH_ENABLE_XINPUT)
         add_library(tinyusb INTERFACE)
         target_link_libraries(tinyusb INTERFACE tinyusb_host)
         add_subdirectory(lib/tusb_xinput)
     endif()
 endif()
 
-if(PICOMEM_ENABLE_PSRAM)
+if(PICOGRAPH_ENABLE_PSRAM)
     if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/rp2040-psram/CMakeLists.txt)
-        message(FATAL_ERROR "PICOMEM_ENABLE_PSRAM requires the lib/rp2040-psram submodule")
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_PSRAM requires the lib/rp2040-psram submodule")
     endif()
     add_subdirectory(lib/rp2040-psram)
 endif()
 
-if(PICOMEM_ENABLE_DISPLAYLINK)
-    if(NOT PICOMEM_ENABLE_USB_HOST)
-        message(FATAL_ERROR "PICOMEM_ENABLE_DISPLAYLINK requires PICOMEM_ENABLE_USB_HOST")
+if(PICOGRAPH_ENABLE_DISPLAYLINK)
+    if(NOT PICOGRAPH_ENABLE_USB_HOST)
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires PICOGRAPH_ENABLE_USB_HOST")
     endif()
     if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo/CMakeLists.txt)
-        message(FATAL_ERROR "PICOMEM_ENABLE_DISPLAYLINK requires lib/libdlo")
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires lib/libdlo")
     endif()
     add_subdirectory(lib/libdlo)
 endif()
 
-if(PICOMEM_ENABLE_GC)
+if(PICOGRAPH_ENABLE_GC)
     if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/libgc/CMakeLists.txt)
-        message(FATAL_ERROR "PICOMEM_ENABLE_GC requires lib/libgc")
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_GC requires lib/libgc")
     endif()
     add_subdirectory(lib/libgc)
 endif()
 
-set(PICOMEM_MODULE_SOURCE "")
-set(PICOMEM_MODULE_SUPPORT_SOURCE "")
-if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
-    set(PICOMEM_MODULE_SOURCE src/modules/register_view.cpp)
-elseif(PICOMEM_MODULE STREQUAL "HERCULES")
-    set(PICOMEM_MODULE_SOURCE src/modules/hercules_device.cpp)
-    list(APPEND PICOMEM_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
-elseif(PICOMEM_MODULE STREQUAL "EGA")
-    set(PICOMEM_MODULE_SOURCE src/modules/ega_device.cpp)
-    list(APPEND PICOMEM_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
-elseif(PICOMEM_MODULE STREQUAL "MDA")
-    set(PICOMEM_MODULE_SOURCE src/modules/mda_device.cpp)
-    list(APPEND PICOMEM_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
-elseif(PICOMEM_MODULE STREQUAL "SAMPLE")
-    set(PICOMEM_MODULE_SOURCE src/modules/sample_device.cpp)
+set(PICOGRAPH_MODULE_SOURCE "")
+set(PICOGRAPH_MODULE_SUPPORT_SOURCE "")
+if(PICOGRAPH_MODULE STREQUAL "REGISTER_VIEW")
+    set(PICOGRAPH_MODULE_SOURCE src/modules/register_view.cpp)
+elseif(PICOGRAPH_MODULE STREQUAL "HERCULES")
+    set(PICOGRAPH_MODULE_SOURCE src/modules/hercules_device.cpp)
+    list(APPEND PICOGRAPH_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
+elseif(PICOGRAPH_MODULE STREQUAL "EGA")
+    set(PICOGRAPH_MODULE_SOURCE src/modules/ega_device.cpp)
+    list(APPEND PICOGRAPH_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
+elseif(PICOGRAPH_MODULE STREQUAL "MDA")
+    set(PICOGRAPH_MODULE_SOURCE src/modules/mda_device.cpp)
+    list(APPEND PICOGRAPH_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
+elseif(PICOGRAPH_MODULE STREQUAL "SAMPLE")
+    set(PICOGRAPH_MODULE_SOURCE src/modules/sample_device.cpp)
 else()
-    message(FATAL_ERROR "Unknown PICOMEM_MODULE=${PICOMEM_MODULE}")
+    message(FATAL_ERROR "Unknown PICOGRAPH_MODULE=${PICOGRAPH_MODULE}")
 endif()
 
-add_executable(picomem
+add_executable(picograph
     src/main.cpp
     src/framework/module_registry.cpp
-    src/hw/picomem_bus.cpp
-    ${PICOMEM_MODULE_SOURCE}
-    ${PICOMEM_MODULE_SUPPORT_SOURCE}
+    src/hw/picograph_bus.cpp
+    ${PICOGRAPH_MODULE_SOURCE}
+    ${PICOGRAPH_MODULE_SUPPORT_SOURCE}
 )
 
-target_include_directories(picomem PRIVATE
+target_include_directories(picograph PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/src
 )
 
-target_compile_definitions(picomem PRIVATE
-    PICOMEM_VERSION="${PROJECT_VERSION}"
-    PICOMEM_SYS_CLK_KHZ=${PICOMEM_SYS_CLK_KHZ}
-    PICOMEM_SAMPLE_IO_BASE=${PICOMEM_SAMPLE_IO_BASE}
-    PICOMEM_SAMPLE_MEM_BASE=${PICOMEM_SAMPLE_MEM_BASE}
-    PICOMEM_SAMPLE_MEM_SNOOP_BASE=${PICOMEM_SAMPLE_MEM_SNOOP_BASE}
+target_compile_definitions(picograph PRIVATE
+    PICOGRAPH_VERSION="${PROJECT_VERSION}"
+    PICOGRAPH_SYS_CLK_KHZ=${PICOGRAPH_SYS_CLK_KHZ}
+    PICOGRAPH_SAMPLE_IO_BASE=${PICOGRAPH_SAMPLE_IO_BASE}
+    PICOGRAPH_SAMPLE_MEM_BASE=${PICOGRAPH_SAMPLE_MEM_BASE}
+    PICOGRAPH_SAMPLE_MEM_SNOOP_BASE=${PICOGRAPH_SAMPLE_MEM_SNOOP_BASE}
     PICO_DEFAULT_UART=0
     PICO_DEFAULT_UART_BAUD_RATE=115200
     PICO_DEFAULT_UART_TX_PIN=28
@@ -149,162 +149,158 @@ target_compile_definitions(picomem PRIVATE
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=250
 )
 
-if(PICOMEM_ENABLE_USB_HOST)
-    target_sources(picomem PRIVATE
+if(PICOGRAPH_ENABLE_USB_HOST)
+    target_sources(picograph PRIVATE
         src/hw/usb_host.cpp
     )
-    target_include_directories(picomem PRIVATE
+    target_include_directories(picograph PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/src/hw/usb_host
     )
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_ENABLE_USB_HOST=1
-        PICOMEM_ENABLE_XINPUT=$<BOOL:${PICOMEM_ENABLE_XINPUT}>
-        CFG_TUSB_CONFIG_FILE=\"picomem_tusb_config.h\"
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_ENABLE_USB_HOST=1
+        PICOGRAPH_ENABLE_XINPUT=$<BOOL:${PICOGRAPH_ENABLE_XINPUT}>
+        CFG_TUSB_CONFIG_FILE=\"picograph_tusb_config.h\"
     )
 else()
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_ENABLE_USB_HOST=0
-        PICOMEM_ENABLE_XINPUT=0
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_ENABLE_USB_HOST=0
+        PICOGRAPH_ENABLE_XINPUT=0
     )
 endif()
 
-if(PICOMEM_ENABLE_PSRAM)
-    target_sources(picomem PRIVATE
+if(PICOGRAPH_ENABLE_PSRAM)
+    target_sources(picograph PRIVATE
         src/hw/psram.cpp
     )
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_ENABLE_PSRAM=1
-        PICOMEM_PSRAM_PIO=${PICOMEM_PSRAM_PIO}
-        PICOMEM_PSRAM_SM=${PICOMEM_PSRAM_SM}
-        PICOMEM_PSRAM_TARGET_MHZ=${PICOMEM_PSRAM_TARGET_MHZ}
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_ENABLE_PSRAM=1
+        PICOGRAPH_PSRAM_PIO=${PICOGRAPH_PSRAM_PIO}
+        PICOGRAPH_PSRAM_SM=${PICOGRAPH_PSRAM_SM}
+        PICOGRAPH_PSRAM_TARGET_MHZ=${PICOGRAPH_PSRAM_TARGET_MHZ}
         PSRAM_ASYNC=1
         PSRAM_SPINLOCK=1
-        PSRAM_PIN_CS=${PICOMEM_PSRAM_PIN_CS}
-        PSRAM_PIN_SCK=${PICOMEM_PSRAM_PIN_SCK}
-        PSRAM_PIN_MOSI=${PICOMEM_PSRAM_PIN_MOSI}
-        PSRAM_PIN_MISO=${PICOMEM_PSRAM_PIN_MISO}
+        PSRAM_PIN_CS=${PICOGRAPH_PSRAM_PIN_CS}
+        PSRAM_PIN_SCK=${PICOGRAPH_PSRAM_PIN_SCK}
+        PSRAM_PIN_MOSI=${PICOGRAPH_PSRAM_PIN_MOSI}
+        PSRAM_PIN_MISO=${PICOGRAPH_PSRAM_PIN_MISO}
     )
 else()
-    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_PSRAM=0)
+    target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_PSRAM=0)
 endif()
 
-if(PICOMEM_ENABLE_DISPLAYLINK)
-    target_link_libraries(picomem libdlo)
-    target_include_directories(picomem PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo)
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_ENABLE_DISPLAYLINK=1
-        PICOMEM_DISPLAYLINK_WIDTH=${PICOMEM_DISPLAYLINK_WIDTH}
-        PICOMEM_DISPLAYLINK_HEIGHT=${PICOMEM_DISPLAYLINK_HEIGHT}
-        PICOMEM_DISPLAYLINK_REFRESH=${PICOMEM_DISPLAYLINK_REFRESH}
+if(PICOGRAPH_ENABLE_DISPLAYLINK)
+    target_link_libraries(picograph libdlo)
+    target_include_directories(picograph PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo)
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_ENABLE_DISPLAYLINK=1
+        PICOGRAPH_DISPLAYLINK_WIDTH=${PICOGRAPH_DISPLAYLINK_WIDTH}
+        PICOGRAPH_DISPLAYLINK_HEIGHT=${PICOGRAPH_DISPLAYLINK_HEIGHT}
+        PICOGRAPH_DISPLAYLINK_REFRESH=${PICOGRAPH_DISPLAYLINK_REFRESH}
         CFG_TUH_API_EDPT_XFER=1
     )
 else()
-    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_DISPLAYLINK=0)
+    target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_DISPLAYLINK=0)
 endif()
 
-if(PICOMEM_ENABLE_GC)
-    target_link_libraries(picomem libgc)
-    target_include_directories(picomem PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libgc)
-    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_GC=1)
+if(PICOGRAPH_ENABLE_GC)
+    target_link_libraries(picograph libgc)
+    target_include_directories(picograph PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libgc)
+    target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_GC=1)
 else()
-    target_compile_definitions(picomem PRIVATE PICOMEM_ENABLE_GC=0)
+    target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_GC=0)
 endif()
 
-if(PICOMEM_HERCULES_DISPLAY_TYPE STREQUAL "WHITE")
-    set(PICOMEM_HERCULES_DISPLAY_TYPE_VALUE 5)
-elseif(PICOMEM_HERCULES_DISPLAY_TYPE STREQUAL "GREEN")
-    set(PICOMEM_HERCULES_DISPLAY_TYPE_VALUE 3)
-elseif(PICOMEM_HERCULES_DISPLAY_TYPE STREQUAL "AMBER")
-    set(PICOMEM_HERCULES_DISPLAY_TYPE_VALUE 4)
-elseif(PICOMEM_HERCULES_DISPLAY_TYPE STREQUAL "RGB")
-    set(PICOMEM_HERCULES_DISPLAY_TYPE_VALUE 0)
-elseif(PICOMEM_HERCULES_DISPLAY_TYPE STREQUAL "RGB_NO_BROWN")
-    set(PICOMEM_HERCULES_DISPLAY_TYPE_VALUE 2)
+if(PICOGRAPH_MONOCHROME_DISPLAY_COLOR STREQUAL "WHITE")
+    set(PICOGRAPH_MONOCHROME_DISPLAY_COLOR_VALUE 5)
+elseif(PICOGRAPH_MONOCHROME_DISPLAY_COLOR STREQUAL "GREEN")
+    set(PICOGRAPH_MONOCHROME_DISPLAY_COLOR_VALUE 3)
+elseif(PICOGRAPH_MONOCHROME_DISPLAY_COLOR STREQUAL "AMBER")
+    set(PICOGRAPH_MONOCHROME_DISPLAY_COLOR_VALUE 4)
 else()
-    message(FATAL_ERROR "Unknown PICOMEM_HERCULES_DISPLAY_TYPE=${PICOMEM_HERCULES_DISPLAY_TYPE}")
+    message(FATAL_ERROR "Unknown PICOGRAPH_MONOCHROME_DISPLAY_COLOR=${PICOGRAPH_MONOCHROME_DISPLAY_COLOR}")
 endif()
 
-if(PICOMEM_EGA_MEMORY_KB STREQUAL "64")
-    set(PICOMEM_EGA_MEMORY_KB_VALUE 64)
-elseif(PICOMEM_EGA_MEMORY_KB STREQUAL "128")
-    set(PICOMEM_EGA_MEMORY_KB_VALUE 128)
-elseif(PICOMEM_EGA_MEMORY_KB STREQUAL "256")
-    set(PICOMEM_EGA_MEMORY_KB_VALUE 256)
+if(PICOGRAPH_EGA_MEMORY_KB STREQUAL "64")
+    set(PICOGRAPH_EGA_MEMORY_KB_VALUE 64)
+elseif(PICOGRAPH_EGA_MEMORY_KB STREQUAL "128")
+    set(PICOGRAPH_EGA_MEMORY_KB_VALUE 128)
+elseif(PICOGRAPH_EGA_MEMORY_KB STREQUAL "256")
+    set(PICOGRAPH_EGA_MEMORY_KB_VALUE 256)
 else()
-    message(FATAL_ERROR "Unknown PICOMEM_EGA_MEMORY_KB=${PICOMEM_EGA_MEMORY_KB}")
+    message(FATAL_ERROR "Unknown PICOGRAPH_EGA_MEMORY_KB=${PICOGRAPH_EGA_MEMORY_KB}")
 endif()
 
-if(PICOMEM_EGA_MONITOR_TYPE STREQUAL "COLOR_40")
-    set(PICOMEM_EGA_MONITOR_TYPE_VALUE 6)
-elseif(PICOMEM_EGA_MONITOR_TYPE STREQUAL "COLOR_80")
-    set(PICOMEM_EGA_MONITOR_TYPE_VALUE 7)
-elseif(PICOMEM_EGA_MONITOR_TYPE STREQUAL "COLOR_ECD")
-    set(PICOMEM_EGA_MONITOR_TYPE_VALUE 9)
-elseif(PICOMEM_EGA_MONITOR_TYPE STREQUAL "MONO_WHITE")
-    set(PICOMEM_EGA_MONITOR_TYPE_VALUE 90)
-elseif(PICOMEM_EGA_MONITOR_TYPE STREQUAL "MONO_GREEN")
-    set(PICOMEM_EGA_MONITOR_TYPE_VALUE 58)
-elseif(PICOMEM_EGA_MONITOR_TYPE STREQUAL "MONO_AMBER")
-    set(PICOMEM_EGA_MONITOR_TYPE_VALUE 74)
+if(PICOGRAPH_EGA_MONITOR_TYPE STREQUAL "COLOR_40")
+    set(PICOGRAPH_EGA_MONITOR_TYPE_VALUE 6)
+elseif(PICOGRAPH_EGA_MONITOR_TYPE STREQUAL "COLOR_80")
+    set(PICOGRAPH_EGA_MONITOR_TYPE_VALUE 7)
+elseif(PICOGRAPH_EGA_MONITOR_TYPE STREQUAL "COLOR_ECD")
+    set(PICOGRAPH_EGA_MONITOR_TYPE_VALUE 9)
+elseif(PICOGRAPH_EGA_MONITOR_TYPE STREQUAL "MONO")
+    set(PICOGRAPH_EGA_MONITOR_TYPE_VALUE 10)
 else()
-    message(FATAL_ERROR "Unknown PICOMEM_EGA_MONITOR_TYPE=${PICOMEM_EGA_MONITOR_TYPE}")
+    message(FATAL_ERROR "Unknown PICOGRAPH_EGA_MONITOR_TYPE=${PICOGRAPH_EGA_MONITOR_TYPE}")
 endif()
 
-if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
-    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_REGISTER_VIEW=1)
-elseif(PICOMEM_MODULE STREQUAL "HERCULES")
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_MODULE_HERCULES=1
-        PICOMEM_HERCULES_DISPLAY_TYPE=${PICOMEM_HERCULES_DISPLAY_TYPE_VALUE}
+if(PICOGRAPH_MODULE STREQUAL "REGISTER_VIEW")
+    target_compile_definitions(picograph PRIVATE PICOGRAPH_MODULE_REGISTER_VIEW=1)
+elseif(PICOGRAPH_MODULE STREQUAL "HERCULES")
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_MODULE_HERCULES=1
+        PICOGRAPH_MONOCHROME_DISPLAY_COLOR=${PICOGRAPH_MONOCHROME_DISPLAY_COLOR_VALUE}
     )
-elseif(PICOMEM_MODULE STREQUAL "EGA")
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_MODULE_EGA=1
-        PICOMEM_EGA_MEMORY_KB=${PICOMEM_EGA_MEMORY_KB_VALUE}
-        PICOMEM_EGA_MONITOR_TYPE=${PICOMEM_EGA_MONITOR_TYPE_VALUE}
+elseif(PICOGRAPH_MODULE STREQUAL "EGA")
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_MODULE_EGA=1
+        PICOGRAPH_EGA_MEMORY_KB=${PICOGRAPH_EGA_MEMORY_KB_VALUE}
+        PICOGRAPH_EGA_MONITOR_TYPE=${PICOGRAPH_EGA_MONITOR_TYPE_VALUE}
+        PICOGRAPH_MONOCHROME_DISPLAY_COLOR=${PICOGRAPH_MONOCHROME_DISPLAY_COLOR_VALUE}
     )
-elseif(PICOMEM_MODULE STREQUAL "MDA")
-    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_MDA=1)
-elseif(PICOMEM_MODULE STREQUAL "SAMPLE")
-    target_compile_definitions(picomem PRIVATE PICOMEM_MODULE_SAMPLE=1)
+elseif(PICOGRAPH_MODULE STREQUAL "MDA")
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_MODULE_MDA=1
+        PICOGRAPH_MONOCHROME_DISPLAY_COLOR=${PICOGRAPH_MONOCHROME_DISPLAY_COLOR_VALUE}
+    )
+elseif(PICOGRAPH_MODULE STREQUAL "SAMPLE")
+    target_compile_definitions(picograph PRIVATE PICOGRAPH_MODULE_SAMPLE=1)
 endif()
 
-if(PICOMEM_BOARD STREQUAL "PICOMEM_M1")
-    set(PICOMEM_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_m1.pio)
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_BOARD_PICOMEM_M1=1
-        PICOMEM_MUX_V2=0
-        PICOMEM_PIO_NEEDS_INVALID_CYCLE=1
+if(PICOGRAPH_BOARD STREQUAL "PICOMEM_M1")
+    set(PICOGRAPH_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_m1.pio)
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_BOARD_PICOMEM_M1=1
+        PICOGRAPH_MUX_V2=0
+        PICOGRAPH_PIO_NEEDS_INVALID_CYCLE=1
     )
-elseif(PICOMEM_BOARD STREQUAL "PICOMEM_M2")
-    set(PICOMEM_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_m2.pio)
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_BOARD_PICOMEM_M2=1
-        PICOMEM_MUX_V2=1
-        PICOMEM_PIO_NEEDS_INVALID_CYCLE=0
+elseif(PICOGRAPH_BOARD STREQUAL "PICOMEM_M2")
+    set(PICOGRAPH_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_m2.pio)
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_BOARD_PICOMEM_M2=1
+        PICOGRAPH_MUX_V2=1
+        PICOGRAPH_PIO_NEEDS_INVALID_CYCLE=0
     )
-elseif(PICOMEM_BOARD STREQUAL "PICOMEM_LP")
-    set(PICOMEM_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_noaen.pio)
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_BOARD_PICOMEM_LP=1
-        PICOMEM_MUX_V2=0
-        PICOMEM_PIO_NEEDS_INVALID_CYCLE=1
+elseif(PICOGRAPH_BOARD STREQUAL "PICOMEM_LP")
+    set(PICOGRAPH_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_noaen.pio)
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_BOARD_PICOMEM_LP=1
+        PICOGRAPH_MUX_V2=0
+        PICOGRAPH_PIO_NEEDS_INVALID_CYCLE=1
     )
-elseif(PICOMEM_BOARD STREQUAL "PICOMEM_15")
-    set(PICOMEM_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_m2_v15.pio)
-    target_compile_definitions(picomem PRIVATE
-        PICOMEM_BOARD_PICOMEM_15=1
-        PICOMEM_MUX_V2=1
-        PICOMEM_PIO_NEEDS_INVALID_CYCLE=0
+elseif(PICOGRAPH_BOARD STREQUAL "PICOMEM_15")
+    set(PICOGRAPH_ISA_PIO ${CMAKE_CURRENT_LIST_DIR}/pio/isa_iomem_m2_v15.pio)
+    target_compile_definitions(picograph PRIVATE
+        PICOGRAPH_BOARD_PICOMEM_15=1
+        PICOGRAPH_MUX_V2=1
+        PICOGRAPH_PIO_NEEDS_INVALID_CYCLE=0
         PICO_PIO_USE_GPIO_BASE=1
     )
 else()
-    message(FATAL_ERROR "Unknown PICOMEM_BOARD=${PICOMEM_BOARD}")
+    message(FATAL_ERROR "Unknown PICOGRAPH_BOARD=${PICOGRAPH_BOARD}")
 endif()
 
-pico_generate_pio_header(picomem ${PICOMEM_ISA_PIO})
+pico_generate_pio_header(picograph ${PICOGRAPH_ISA_PIO})
 
-target_link_libraries(picomem
+target_link_libraries(picograph
     pico_stdlib
     pico_multicore
     hardware_pio
@@ -312,39 +308,39 @@ target_link_libraries(picomem
     hardware_vreg
 )
 
-if(PICOMEM_ENABLE_USB_HOST)
-    target_link_libraries(picomem
+if(PICOGRAPH_ENABLE_USB_HOST)
+    target_link_libraries(picograph
         tinyusb_board
         tinyusb_host
     )
-    if(PICOMEM_ENABLE_XINPUT)
-        target_link_libraries(picomem xinput_host)
+    if(PICOGRAPH_ENABLE_XINPUT)
+        target_link_libraries(picograph xinput_host)
     endif()
 endif()
 
-if(PICOMEM_ENABLE_PSRAM)
-    target_link_libraries(picomem
+if(PICOGRAPH_ENABLE_PSRAM)
+    target_link_libraries(picograph
         rp2040-psram
         hardware_dma
         hardware_sync
     )
 endif()
 
-pico_set_program_name(picomem "picomem")
-pico_set_program_version(picomem ${PROJECT_VERSION})
-pico_enable_stdio_uart(picomem 1)
-pico_enable_stdio_usb(picomem 0)
-pico_enable_stdio_semihosting(picomem 0)
-pico_add_extra_outputs(picomem)
+pico_set_program_name(picograph "picograph")
+pico_set_program_version(picograph ${PROJECT_VERSION})
+pico_enable_stdio_uart(picograph 1)
+pico_enable_stdio_usb(picograph 0)
+pico_enable_stdio_semihosting(picograph 0)
+pico_add_extra_outputs(picograph)
 
 if(PICO_PLATFORM MATCHES "rp2350")
-    set(PICOMEM_OPENOCD_TARGET target/rp2350.cfg)
+    set(PICOGRAPH_OPENOCD_TARGET target/rp2350.cfg)
 else()
-    set(PICOMEM_OPENOCD_TARGET target/rp2040.cfg)
+    set(PICOGRAPH_OPENOCD_TARGET target/rp2040.cfg)
 endif()
 
 add_custom_target(
     program
-    DEPENDS picomem
-    COMMAND openocd -f interface/picoprobe.cfg -f ${PICOMEM_OPENOCD_TARGET} -c "program picomem.elf verify reset exit"
+    DEPENDS picograph
+    COMMAND openocd -f interface/picoprobe.cfg -f ${PICOGRAPH_OPENOCD_TARGET} -c "program picograph.elf verify reset exit"
 )

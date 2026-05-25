@@ -1,6 +1,6 @@
-# PicoMEM Trap Map
+# PicoGraph Trap Map
 
-This template uses PicoMEM's ISA hardware as a generic trap fabric. The template does not port PicoGUS devices or PicoMEM devices; it gives a single compiled module a place to claim I/O and memory regions.
+PicoGraph uses PicoMEM's ISA hardware as a generic trap fabric. It does not port PicoGUS devices or PicoMEM devices; it gives a single compiled module a place to claim I/O and memory regions.
 
 ## I/O Space
 

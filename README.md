@@ -1,14 +1,14 @@
-# picomem_template
+# PicoGraph
 
-This template is a firmware project that combines PicoGUS's build-time modular shape with PicoMEM's ISA bus hardware for experimentation
+PicoGraph is a firmware project that combines PicoGUS's build-time modular shape with PicoMEM's ISA bus hardware for experimentation.
 
 It intentionally does not port PicoGUS's GUS, SB, AdLib, MPU, USB, or NE2000 device implementations. Instead, one module is compiled into the firmware at a time and that module claims the I/O and memory windows it wants to trap on PicoMEM hardware.
 
 ## Layout
 
-- `CMakeLists.txt`: Pico SDK build with `PICOMEM_MODULE` and `PICOMEM_BOARD` selection.
+- `CMakeLists.txt`: Pico SDK build with `PICOGRAPH_MODULE` and `PICOGRAPH_BOARD` selection.
 - `src/framework`: module registry, mirroring PicoGUS's one-firmware-per-device model.
-- `src/hw`: PicoMEM ISA trap table and bus loop.
+- `src/hw`: PicoGraph ISA trap table and bus loop for PicoMEM hardware.
 - `src/modules/ega_device.cpp`: IBM EGA-compatible emulation based on PCem, displayed through DisplayLink.
 - `src/modules/hercules_device.cpp`: Hercules/MDA-compatible text and Hercules graphics emulation displayed through DisplayLink.
 - `src/modules/sample_device.cpp`: sample module covering I/O traps, memory traps, I/O snoops, and memory snoops.
@@ -27,18 +27,19 @@ cmake --build build
 Useful options:
 
 ```sh
--DPICOMEM_BOARD=PICOMEM_M2
--DPICOMEM_MODULE=REGISTER_VIEW
--DPICOMEM_MODULE=HERCULES
--DPICOMEM_MODULE=EGA
--DPICOMEM_MODULE=SAMPLE
--DPICOMEM_EGA_MEMORY_KB=256
--DPICOMEM_EGA_MONITOR_TYPE=COLOR_ECD
--DPICOMEM_SAMPLE_IO_BASE=0x300
--DPICOMEM_SAMPLE_MEM_BASE=0xd0000
--DPICOMEM_SAMPLE_MEM_SNOOP_BASE=0xb8000
--DPICOMEM_ENABLE_USB_HOST=ON
--DPICOMEM_ENABLE_PSRAM=ON
+-DPICOGRAPH_BOARD=PICOMEM_M2
+-DPICOGRAPH_MODULE=REGISTER_VIEW
+-DPICOGRAPH_MODULE=HERCULES
+-DPICOGRAPH_MODULE=EGA
+-DPICOGRAPH_MODULE=SAMPLE
+-DPICOGRAPH_EGA_MEMORY_KB=256
+-DPICOGRAPH_EGA_MONITOR_TYPE=COLOR_ECD
+-DPICOGRAPH_MONOCHROME_DISPLAY_COLOR=GREEN
+-DPICOGRAPH_SAMPLE_IO_BASE=0x300
+-DPICOGRAPH_SAMPLE_MEM_BASE=0xd0000
+-DPICOGRAPH_SAMPLE_MEM_SNOOP_BASE=0xb8000
+-DPICOGRAPH_ENABLE_USB_HOST=ON
+-DPICOGRAPH_ENABLE_PSRAM=ON
 ```
 
 Supported board profiles:
@@ -60,12 +61,12 @@ See `docs/trap-map.md` for the concrete ranges and caveats.
 
 ## Adding A Module
 
-Create a new file in `src/modules`, define a `picomem::Module`, add a `PICOMEM_MODULE_*` branch in `src/framework/module_registry.cpp`, then add the file and compile definition branch in `CMakeLists.txt`.
+Create a new file in `src/modules`, define a `picograph::Module`, add a `PICOGRAPH_MODULE_*` branch in `src/framework/module_registry.cpp`, then add the file and compile definition branch in `CMakeLists.txt`.
 
 The important rule is the PicoGUS one: build one hardware personality into the firmware. Do not make every device active at once unless you are explicitly designing a combined firmware.
 
 ## Optional Hardware Helpers
 
-`picomem/psram.h` wraps the checked-in `lib/rp2040-psram` submodule with a small template-facing API. The start path follows ISA-PicoMEM's RP2040 DMA path: PIO1, an auto-claimed state machine, a target 220 MHz PSRAM PIO clock, stronger output drive on CS/SCK/MOSI, and an 8 MB boundary probe using `0xaa`/`0x55`. Defaults match ISA-PicoMEM's PSRAM pins: CS 5, SCK 6, MOSI 7, MISO 4. Override them with the `PICOMEM_PSRAM_PIN_*` CMake cache values.
+`picograph/psram.h` wraps the checked-in `lib/rp2040-psram` submodule with a small template-facing API. The start path follows ISA-PicoMEM's RP2040 DMA path: PIO1, an auto-claimed state machine, a target 220 MHz PSRAM PIO clock, stronger output drive on CS/SCK/MOSI, and an 8 MB boundary probe using `0xaa`/`0x55`. Defaults match ISA-PicoMEM's PSRAM pins: CS 5, SCK 6, MOSI 7, MISO 4. Override them with the `PICOGRAPH_PSRAM_PIN_*` CMake cache values.
 
-`picomem/usb_host.h` wraps TinyUSB host polling and keeps the latest keyboard, mouse, and XInput gamepad state. Its lifecycle mirrors ISA-PicoMEM: `usb_host_start()` refuses to start when USB serial stdio is active, starts TinyUSB with `tuh_init(BOARD_TUH_RHPORT)`, and `usb_host_task()` polls `tuh_task()` only while enabled. The TinyUSB submodule is the same USB library ISA-PicoMEM keeps under `src/lib/tinyusb`; `lib/tusb_xinput` supplies the XInput class driver.
+`picograph/usb_host.h` wraps TinyUSB host polling and keeps the latest keyboard, mouse, and XInput gamepad state. Its lifecycle mirrors ISA-PicoMEM: `usb_host_start()` refuses to start when USB serial stdio is active, starts TinyUSB with `tuh_init(BOARD_TUH_RHPORT)`, and `usb_host_task()` polls `tuh_task()` only while enabled. The TinyUSB submodule is the same USB library ISA-PicoMEM keeps under `src/lib/tinyusb`; `lib/tusb_xinput` supplies the XInput class driver.

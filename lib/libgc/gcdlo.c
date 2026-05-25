@@ -6,16 +6,16 @@
 
 #define DLO_HANDLE(bitmap) ((dlo_dev_t)(uintptr_t)((bitmap)->handle))
 
-#ifndef PICOMEM_DISPLAYLINK_WIDTH
-#define PICOMEM_DISPLAYLINK_WIDTH 720
+#ifndef PICOGRAPH_DISPLAYLINK_WIDTH
+#define PICOGRAPH_DISPLAYLINK_WIDTH 720
 #endif
 
-#ifndef PICOMEM_DISPLAYLINK_HEIGHT
-#define PICOMEM_DISPLAYLINK_HEIGHT 400
+#ifndef PICOGRAPH_DISPLAYLINK_HEIGHT
+#define PICOGRAPH_DISPLAYLINK_HEIGHT 400
 #endif
 
-#ifndef PICOMEM_DISPLAYLINK_REFRESH
-#define PICOMEM_DISPLAYLINK_REFRESH 70
+#ifndef PICOGRAPH_DISPLAYLINK_REFRESH
+#define PICOGRAPH_DISPLAYLINK_REFRESH 70
 #endif
 
 static dlo_mode_t *DLO_ModeForBitmap(GCBITMAP *pBitmap)
@@ -315,15 +315,15 @@ GCBOOL DLO_HWSetupDevice(GCDEVICE *pDevice, GCBITMAP *pDisplaySurface, void *par
 
     if (pMode->view.width == 800 && pMode->view.height == 480) {
         printf("gc: DisplayLink skipping mode set for LCD panel, centering view.\n");
-        long xOffset = (pMode->view.width - PICOMEM_DISPLAYLINK_WIDTH) / 2;
-        long yOffset = (pMode->view.height - PICOMEM_DISPLAYLINK_HEIGHT) / 2;
+        long xOffset = (pMode->view.width - PICOGRAPH_DISPLAYLINK_WIDTH) / 2;
+        long yOffset = (pMode->view.height - PICOGRAPH_DISPLAYLINK_HEIGHT) / 2;
         GCSetOffset(pDevice->pDisplay, xOffset, yOffset);
     } else {
         desc.view.base = 0;
-        desc.view.width = PICOMEM_DISPLAYLINK_WIDTH;
-        desc.view.height = PICOMEM_DISPLAYLINK_HEIGHT;
+        desc.view.width = PICOGRAPH_DISPLAYLINK_WIDTH;
+        desc.view.height = PICOGRAPH_DISPLAYLINK_HEIGHT;
         desc.view.bpp = 24;
-        desc.refresh = PICOMEM_DISPLAYLINK_REFRESH;
+        desc.refresh = PICOGRAPH_DISPLAYLINK_REFRESH;
 
         ret = dlo_set_mode(uid, &desc);
 

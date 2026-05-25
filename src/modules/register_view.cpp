@@ -1,4 +1,4 @@
-#include "picomem/module.h"
+#include "picograph/module.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -7,11 +7,11 @@ extern "C" {
 #include "gc.h"
 }
 
-namespace picomem {
+namespace picograph {
 namespace {
 
-#if !PICOMEM_ENABLE_DISPLAYLINK || !PICOMEM_ENABLE_GC
-#error "The register view module requires PICOMEM_ENABLE_DISPLAYLINK and PICOMEM_ENABLE_GC"
+#if !PICOGRAPH_ENABLE_DISPLAYLINK || !PICOGRAPH_ENABLE_GC
+#error "The register view module requires PICOGRAPH_ENABLE_DISPLAYLINK and PICOGRAPH_ENABLE_GC"
 #endif
 
 constexpr uint16_t kMcgaBase = 0x3c0;
@@ -1640,4 +1640,4 @@ const Module &register_view_module()
     return module;
 }
 
-}  // namespace picomem
+}  // namespace picograph

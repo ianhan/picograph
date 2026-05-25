@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace picomem {
+namespace picograph {
 
 constexpr uint8_t kPsramDisabled = 0xff;
 constexpr uint8_t kPsramInitFailed = 0xfd;
@@ -16,4 +16,4 @@ void psram_write8(uint32_t address, uint8_t value);
 void psram_read(uint32_t address, uint8_t *data, size_t length);
 void psram_write(uint32_t address, const uint8_t *data, size_t length);
 
-}  // namespace picomem
+}  // namespace picograph

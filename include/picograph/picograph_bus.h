@@ -2,9 +2,9 @@
 
 #include <stdint.h>
 
-#include "picomem/module.h"
+#include "picograph/module.h"
 
-namespace picomem {
+namespace picograph {
 
 constexpr uint16_t kIsaIoFirst = 0x000;
 constexpr uint16_t kIsaIoLast = 0x3ff;
@@ -22,14 +22,14 @@ enum class TrapResult : uint8_t {
     Overlap,
 };
 
-void picomem_bus_init();
-void picomem_bus_task();
+void picograph_bus_init();
+void picograph_bus_task();
 TrapResult register_io_trap(const IoTrap &trap);
 TrapResult register_mem_trap(const MemTrap &trap);
 TrapResult register_io_snoop(const IoSnoop &snoop);
 TrapResult register_mem_snoop(const MemSnoop &snoop);
-[[noreturn]] void picomem_bus_loop();
+[[noreturn]] void picograph_bus_loop();
 
 const char *trap_result_name(TrapResult result);
 
-}  // namespace picomem
+}  // namespace picograph

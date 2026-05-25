@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace picomem {
+namespace picograph {
 
 void DloDirtyDisplay::reset(unsigned max_width, unsigned max_lines, GCCOLOR *line_buffer, const char *log_prefix)
 {
@@ -1188,4 +1188,4 @@ void DloDirtyDisplay::publish_frame(int new_first_line,
     render_frame = render_full_frame || dirty;
 }
 
-}  // namespace picomem
+}  // namespace picograph

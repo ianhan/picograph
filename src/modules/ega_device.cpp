@@ -1,4 +1,4 @@
-#include "picomem/module.h"
+#include "picograph/module.h"
 
 #include "modules/dlodirty.h"
 #include "pcem_ega_bios_rom.h"
@@ -12,11 +12,11 @@
 #include <cstring>
 
 
-namespace picomem {
+namespace picograph {
 namespace {
 
-#if !PICOMEM_ENABLE_DISPLAYLINK || !PICOMEM_ENABLE_GC
-#error "The EGA module requires PICOMEM_ENABLE_DISPLAYLINK and PICOMEM_ENABLE_GC"
+#if !PICOGRAPH_ENABLE_DISPLAYLINK || !PICOGRAPH_ENABLE_GC
+#error "The EGA module requires PICOGRAPH_ENABLE_DISPLAYLINK and PICOGRAPH_ENABLE_GC"
 #endif
 
 constexpr uint16_t kEgaIoBase = 0x03a0;
@@ -27,18 +27,18 @@ constexpr uint32_t kEgaRomBase = 0x000c0000;
 constexpr uint32_t kEgaRomImageSize = sizeof(kPcemEgaBiosRom);
 constexpr uint32_t kEgaRomSize = 0x00008000;
 
-#ifndef PICOMEM_EGA_MEMORY_KB
-#define PICOMEM_EGA_MEMORY_KB 256
+#ifndef PICOGRAPH_EGA_MEMORY_KB
+#define PICOGRAPH_EGA_MEMORY_KB 256
 #endif
 
-#ifndef PICOMEM_EGA_MONITOR_TYPE
-#define PICOMEM_EGA_MONITOR_TYPE 9
+#ifndef PICOGRAPH_EGA_MONITOR_TYPE
+#define PICOGRAPH_EGA_MONITOR_TYPE 9
 #endif
 
-static_assert(PICOMEM_EGA_MEMORY_KB == 64 || PICOMEM_EGA_MEMORY_KB == 128 || PICOMEM_EGA_MEMORY_KB == 256,
-              "PICOMEM_EGA_MEMORY_KB must be 64, 128, or 256");
+static_assert(PICOGRAPH_EGA_MEMORY_KB == 64 || PICOGRAPH_EGA_MEMORY_KB == 128 || PICOGRAPH_EGA_MEMORY_KB == 256,
+              "PICOGRAPH_EGA_MEMORY_KB must be 64, 128, or 256");
 
-constexpr uint32_t kEgaVramSize = (uint32_t)PICOMEM_EGA_MEMORY_KB * 1024u;
+constexpr uint32_t kEgaVramSize = (uint32_t)PICOGRAPH_EGA_MEMORY_KB * 1024u;
 
 constexpr unsigned kMaxEgaWidth = 1024;
 constexpr unsigned kMaxEgaLines = 512;
@@ -54,7 +54,13 @@ constexpr int kDirtyMapped = 1;
 constexpr int kDisplayGreen = 3;
 constexpr int kDisplayAmber = 4;
 constexpr int kDisplayWhite = 5;
-constexpr int kDefaultMonitorType = PICOMEM_EGA_MONITOR_TYPE;
+constexpr int kDefaultMonitorType = PICOGRAPH_EGA_MONITOR_TYPE;
+
+#ifndef PICOGRAPH_MONOCHROME_DISPLAY_COLOR
+#define PICOGRAPH_MONOCHROME_DISPLAY_COLOR kDisplayWhite
+#endif
+
+constexpr int kMonochromeDisplayColor = PICOGRAPH_MONOCHROME_DISPLAY_COLOR;
 
 struct Ega {
     uint8_t crtcreg;
@@ -137,7 +143,7 @@ GCCOLOR makecol(uint8_t r, uint8_t g, uint8_t b)
 
 GCCOLOR ega_mono_color(uint8_t c)
 {
-    switch (kDefaultMonitorType >> 4) {
+    switch (kMonochromeDisplayColor) {
     case kDisplayGreen:
         switch ((c >> 3) & 3) {
         case 0: return makecol(0x00, 0x00, 0x00);
@@ -697,8 +703,8 @@ void publish_frame(Ega *e)
                           width,
                           source_height,
                           scale,
-                          PICOMEM_DISPLAYLINK_WIDTH,
-                          PICOMEM_DISPLAYLINK_HEIGHT);
+                          PICOGRAPH_DISPLAYLINK_WIDTH,
+                          PICOGRAPH_DISPLAYLINK_HEIGHT);
 
     e->frames++;
     e->video_res_x = xsize;
@@ -1500,4 +1506,4 @@ const Module &ega_module()
     return module;
 }
 
-}  // namespace picomem
+}  // namespace picograph

@@ -1,4 +1,4 @@
-#include "picomem/usb_host.h"
+#include "picograph/usb_host.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -6,21 +6,21 @@
 #include "pico/time.h"
 #include "tusb.h"
 
-#if PICOMEM_ENABLE_XINPUT
+#if PICOGRAPH_ENABLE_XINPUT
 #include "xinput_host.h"
 #endif
 
-#if PICOMEM_ENABLE_DISPLAYLINK
+#if PICOGRAPH_ENABLE_DISPLAYLINK
 #include "libdlo.h"
 #endif
 
-namespace picomem {
+namespace picograph {
 namespace {
 
 UsbHostState state;
 
-#ifndef PICOMEM_USB_HOST_START_DELAY_MS
-#define PICOMEM_USB_HOST_START_DELAY_MS 250u
+#ifndef PICOGRAPH_USB_HOST_START_DELAY_MS
+#define PICOGRAPH_USB_HOST_START_DELAY_MS 250u
 #endif
 
 constexpr uint16_t kDisplayLinkVid = 0x17e9;
@@ -30,7 +30,7 @@ constexpr uint32_t kDisplayLinkRetryWindowMs = 5000;
 bool tinyusb_started;
 uint32_t tinyusb_start_ms;
 
-#if PICOMEM_ENABLE_DISPLAYLINK
+#if PICOGRAPH_ENABLE_DISPLAYLINK
 bool displaylink_initialized;
 bool displaylink_configured;
 uint8_t displaylink_dev_addr;
@@ -116,7 +116,7 @@ bool start_tinyusb_host() {
     return true;
 }
 
-#if PICOMEM_ENABLE_DISPLAYLINK
+#if PICOGRAPH_ENABLE_DISPLAYLINK
 void clear_displaylink_retry(uint8_t dev_addr) {
     if (pending_displaylink_dev_addr == dev_addr) {
         pending_displaylink_dev_addr = 0;
@@ -217,7 +217,7 @@ void retry_displaylink_mount() {
 }
 #endif
 
-#if PICOMEM_ENABLE_XINPUT
+#if PICOGRAPH_ENABLE_XINPUT
 void update_joystick_from_xinput(uint16_t buttons,
                                  int16_t left_x,
                                  int16_t left_y,
@@ -261,10 +261,10 @@ bool usb_host_start(bool serial_usb_active) {
     }
 
     state.enabled = true;
-    tinyusb_start_ms = now_ms() + static_cast<uint32_t>(PICOMEM_USB_HOST_START_DELAY_MS);
+    tinyusb_start_ms = now_ms() + static_cast<uint32_t>(PICOGRAPH_USB_HOST_START_DELAY_MS);
     printf("usb host: scheduled on rhport %d after %u ms\n",
            BOARD_TUH_RHPORT,
-           static_cast<unsigned>(PICOMEM_USB_HOST_START_DELAY_MS));
+           static_cast<unsigned>(PICOGRAPH_USB_HOST_START_DELAY_MS));
     return true;
 }
 
@@ -292,7 +292,7 @@ void usb_host_task() {
     }
 
     tuh_task();
-#if PICOMEM_ENABLE_DISPLAYLINK
+#if PICOGRAPH_ENABLE_DISPLAYLINK
     retry_displaylink_mount();
 #endif
 }
@@ -301,26 +301,26 @@ const UsbHostState &usb_host_state() {
     return state;
 }
 
-}  // namespace picomem
+}  // namespace picograph
 
 extern "C" void tuh_mount_cb(uint8_t dev_addr) {
     (void)dev_addr;
-    picomem::refresh_mount_count();
-#if PICOMEM_ENABLE_DISPLAYLINK
-    if (!picomem::handle_displaylink_mount(dev_addr)) {
-        picomem::schedule_displaylink_retry(dev_addr);
+    picograph::refresh_mount_count();
+#if PICOGRAPH_ENABLE_DISPLAYLINK
+    if (!picograph::handle_displaylink_mount(dev_addr)) {
+        picograph::schedule_displaylink_retry(dev_addr);
     }
 #endif
 }
 
 extern "C" void tuh_umount_cb(uint8_t dev_addr) {
     (void)dev_addr;
-    picomem::refresh_mount_count();
-#if PICOMEM_ENABLE_DISPLAYLINK
-    picomem::clear_displaylink_retry(dev_addr);
-    if (picomem::displaylink_dev_addr == dev_addr) {
-        picomem::displaylink_configured = false;
-        picomem::displaylink_dev_addr = 0;
+    picograph::refresh_mount_count();
+#if PICOGRAPH_ENABLE_DISPLAYLINK
+    picograph::clear_displaylink_retry(dev_addr);
+    if (picograph::displaylink_dev_addr == dev_addr) {
+        picograph::displaylink_configured = false;
+        picograph::displaylink_dev_addr = 0;
     }
 #endif
 }
@@ -331,7 +331,7 @@ extern "C" void tuh_hid_mount_cb(uint8_t dev_addr,
                                   uint16_t desc_len) {
     (void)report_desc;
     (void)desc_len;
-    ++picomem::state.mounted_hid_interfaces;
+    ++picograph::state.mounted_hid_interfaces;
 
     bool has_keyboard = false;
     bool has_mouse = false;
@@ -370,22 +370,22 @@ extern "C" void tuh_hid_mount_cb(uint8_t dev_addr,
     tuh_vid_pid_get(dev_addr, &vid, &pid);
     char message[80];
     if (has_keyboard && has_mouse) {
-        snprintf(message, sizeof(message), "%sUSB keyboard and mouse", picomem::vendor_name(vid));
+        snprintf(message, sizeof(message), "%sUSB keyboard and mouse", picograph::vendor_name(vid));
     } else if (has_keyboard) {
-        snprintf(message, sizeof(message), "%sUSB keyboard", picomem::vendor_name(vid));
+        snprintf(message, sizeof(message), "%sUSB keyboard", picograph::vendor_name(vid));
     } else if (has_mouse) {
-        snprintf(message, sizeof(message), "%sUSB mouse", picomem::vendor_name(vid));
+        snprintf(message, sizeof(message), "%sUSB mouse", picograph::vendor_name(vid));
     } else if (has_joystick) {
-        snprintf(message, sizeof(message), "%sUSB joystick", picomem::vendor_name(vid));
+        snprintf(message, sizeof(message), "%sUSB joystick", picograph::vendor_name(vid));
     } else {
         snprintf(message, sizeof(message), "%sUSB %u report%s v:%04x p:%04x",
-                 picomem::vendor_name(vid),
+                 picograph::vendor_name(vid),
                  other_reports,
                  other_reports == 1 ? "" : "s",
                  vid,
                  pid);
     }
-    picomem::set_status(dev_addr, message);
+    picograph::set_status(dev_addr, message);
 
     if (!tuh_hid_receive_report(dev_addr, instance)) {
         printf("usb host: failed to request HID report dev=%u instance=%u\n", dev_addr, instance);
@@ -395,8 +395,8 @@ extern "C" void tuh_hid_mount_cb(uint8_t dev_addr,
 extern "C" void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     (void)dev_addr;
     (void)instance;
-    if (picomem::state.mounted_hid_interfaces > 0) {
-        --picomem::state.mounted_hid_interfaces;
+    if (picograph::state.mounted_hid_interfaces > 0) {
+        --picograph::state.mounted_hid_interfaces;
     }
 }
 
@@ -408,21 +408,21 @@ extern "C" void tuh_hid_report_received_cb(uint8_t dev_addr,
 
     if (protocol == HID_ITF_PROTOCOL_KEYBOARD && len >= sizeof(hid_keyboard_report_t)) {
         auto const *keyboard = reinterpret_cast<hid_keyboard_report_t const *>(report);
-        picomem::state.keyboard.modifier = keyboard->modifier;
-        memcpy(picomem::state.keyboard.keycode, keyboard->keycode, sizeof(picomem::state.keyboard.keycode));
+        picograph::state.keyboard.modifier = keyboard->modifier;
+        memcpy(picograph::state.keyboard.keycode, keyboard->keycode, sizeof(picograph::state.keyboard.keycode));
     } else if (protocol == HID_ITF_PROTOCOL_MOUSE && len >= sizeof(hid_mouse_report_t)) {
         auto const *mouse = reinterpret_cast<hid_mouse_report_t const *>(report);
-        picomem::state.mouse.event = true;
-        picomem::state.mouse.buttons = mouse->buttons;
-        picomem::state.mouse.x = mouse->x;
-        picomem::state.mouse.y = mouse->y;
-        picomem::state.mouse.wheel = mouse->wheel;
+        picograph::state.mouse.event = true;
+        picograph::state.mouse.buttons = mouse->buttons;
+        picograph::state.mouse.x = mouse->x;
+        picograph::state.mouse.y = mouse->y;
+        picograph::state.mouse.wheel = mouse->wheel;
     }
 
     (void)tuh_hid_receive_report(dev_addr, instance);
 }
 
-#if PICOMEM_ENABLE_XINPUT
+#if PICOGRAPH_ENABLE_XINPUT
 extern "C" usbh_class_driver_t const *usbh_app_driver_get_cb(uint8_t *driver_count) {
     *driver_count = 1;
     return &usbh_xinput_driver;
@@ -451,10 +451,10 @@ extern "C" void tuh_xinput_mount_cb(uint8_t dev_addr, uint8_t instance, xinputh_
     }
 
     char message[80];
-    snprintf(message, sizeof(message), "%s%s Joystick (XInput)", picomem::vendor_name(vid), type);
-    picomem::set_status(dev_addr, message);
+    snprintf(message, sizeof(message), "%s%s Joystick (XInput)", picograph::vendor_name(vid), type);
+    picograph::set_status(dev_addr, message);
 
-    picomem::state.xinput.connected = true;
+    picograph::state.xinput.connected = true;
     if (xinput_itf->type == XBOX360_WIRELESS && !xinput_itf->connected) {
         (void)tuh_xinput_receive_report(dev_addr, instance);
         return;
@@ -468,7 +468,7 @@ extern "C" void tuh_xinput_mount_cb(uint8_t dev_addr, uint8_t instance, xinputh_
 extern "C" void tuh_xinput_umount_cb(uint8_t dev_addr, uint8_t instance) {
     (void)dev_addr;
     (void)instance;
-    picomem::state.xinput = {};
+    picograph::state.xinput = {};
 }
 
 extern "C" void tuh_xinput_report_received_cb(uint8_t dev_addr,
@@ -476,16 +476,16 @@ extern "C" void tuh_xinput_report_received_cb(uint8_t dev_addr,
                                                xinputh_interface_t const *xid_itf,
                                                uint16_t len) {
     (void)len;
-    picomem::state.xinput.connected = xid_itf->connected;
-    picomem::state.xinput.buttons = xid_itf->pad.wButtons;
-    picomem::state.xinput.left_trigger = xid_itf->pad.bLeftTrigger;
-    picomem::state.xinput.right_trigger = xid_itf->pad.bRightTrigger;
-    picomem::state.xinput.left_x = xid_itf->pad.sThumbLX;
-    picomem::state.xinput.left_y = xid_itf->pad.sThumbLY;
-    picomem::state.xinput.right_x = xid_itf->pad.sThumbRX;
-    picomem::state.xinput.right_y = xid_itf->pad.sThumbRY;
+    picograph::state.xinput.connected = xid_itf->connected;
+    picograph::state.xinput.buttons = xid_itf->pad.wButtons;
+    picograph::state.xinput.left_trigger = xid_itf->pad.bLeftTrigger;
+    picograph::state.xinput.right_trigger = xid_itf->pad.bRightTrigger;
+    picograph::state.xinput.left_x = xid_itf->pad.sThumbLX;
+    picograph::state.xinput.left_y = xid_itf->pad.sThumbLY;
+    picograph::state.xinput.right_x = xid_itf->pad.sThumbRX;
+    picograph::state.xinput.right_y = xid_itf->pad.sThumbRY;
     if (xid_itf->last_xfer_result == XFER_RESULT_SUCCESS && xid_itf->connected && xid_itf->new_pad_data) {
-        picomem::update_joystick_from_xinput(xid_itf->pad.wButtons,
+        picograph::update_joystick_from_xinput(xid_itf->pad.wButtons,
                                              xid_itf->pad.sThumbLX,
                                              xid_itf->pad.sThumbLY,
                                              xid_itf->pad.sThumbRX,

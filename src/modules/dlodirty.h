@@ -6,7 +6,7 @@ extern "C" {
 #include "gc.h"
 }
 
-namespace picomem {
+namespace picograph {
 
 class DloDirtyDisplay {
 public:
@@ -185,4 +185,4 @@ private:
     volatile uint32_t dirty_line_marks_ = 0;
 };
 
-}  // namespace picomem
+}  // namespace picograph

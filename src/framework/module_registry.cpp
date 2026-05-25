@@ -1,6 +1,6 @@
-#include "picomem/module.h"
+#include "picograph/module.h"
 
-namespace picomem {
+namespace picograph {
 
 const Module &register_view_module();
 const Module &hercules_module();
@@ -9,19 +9,19 @@ const Module &mda_module();
 const Module &sample_module();
 
 const Module &active_module() {
-#if PICOMEM_MODULE_REGISTER_VIEW
+#if PICOGRAPH_MODULE_REGISTER_VIEW
     return register_view_module();
-#elif PICOMEM_MODULE_HERCULES
+#elif PICOGRAPH_MODULE_HERCULES
     return hercules_module();
-#elif PICOMEM_MODULE_EGA
+#elif PICOGRAPH_MODULE_EGA
     return ega_module();
-#elif PICOMEM_MODULE_MDA
+#elif PICOGRAPH_MODULE_MDA
     return mda_module();
-#elif PICOMEM_MODULE_SAMPLE
+#elif PICOGRAPH_MODULE_SAMPLE
     return sample_module();
 #else
-#error "No PICOMEM_MODULE selected"
+#error "No PICOGRAPH_MODULE selected"
 #endif
 }
 
-}  // namespace picomem
+}  // namespace picograph
