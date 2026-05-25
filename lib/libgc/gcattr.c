@@ -14,6 +14,46 @@ long GCHeight(GC *pGC)
     return pGC->bitmap.height;
 }
 
+unsigned long GCDeviceFrameBytes(GC *pGC)
+{
+    if (!pGC || !pGC->device.HWFrameBytes) {
+        return 0;
+    }
+    return pGC->device.HWFrameBytes(pGC->device.hDevice);
+}
+
+unsigned long GCDeviceBase(GC *pGC)
+{
+    return pGC->bitmap.deviceBase;
+}
+
+void GCSetDeviceBase(GC *pGC, unsigned long deviceBase)
+{
+    pGC->bitmap.deviceBase = deviceBase;
+}
+
+GCBOOL GCPresentDeviceBase(GC *pGC, unsigned long base)
+{
+    GCBOOL result;
+
+    if (!pGC || !pGC->device.HWPresentBase) {
+        return GCFALSE;
+    }
+
+    GCPBeginAccess(pGC);
+    result = pGC->device.HWPresentBase(pGC->device.hDevice, base);
+    GCPEndAccess(pGC);
+    return result;
+}
+
+GCBOOL GCPresentDeviceDrawBase(GC *pGC)
+{
+    if (!pGC) {
+        return GCFALSE;
+    }
+    return GCPresentDeviceBase(pGC, GCDeviceBase(pGC));
+}
+
 void GCSetBackgroundColor(GC *pGC, GCCOLOR color)
 {
     pGC->backgroundColor = color;

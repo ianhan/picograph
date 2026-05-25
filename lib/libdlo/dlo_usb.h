@@ -119,6 +119,15 @@ extern dlo_retcode_t dlo_usb_std_chan(const dlo_device_t * const dev);
 extern dlo_retcode_t dlo_usb_write(dlo_device_t * const dev);
 
 
+/** Discard command buffer contents without sending them.
+ *
+ *  @param  dev  Pointer to @a dlo_device_t structure.
+ *
+ *  @return  Return code, zero for no error.
+ */
+extern dlo_retcode_t dlo_usb_discard(dlo_device_t * const dev);
+
+
 /** Write the contents of a specified command buffer to the specified device.
  *
  *  @param  dev   Pointer to @a dlo_device_t structure.

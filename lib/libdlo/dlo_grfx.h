@@ -90,4 +90,21 @@ extern dlo_retcode_t dlo_grfx_copy_rect(dlo_device_t * const dev, const dlo_area
 extern dlo_retcode_t dlo_grfx_copy_host_bmp(dlo_device_t * const dev, const dlo_bmpflags_t flags, const dlo_fbuf_t const *fbuf, const dlo_area_t * const area);
 
 
+/** Copy one unclipped RGBX8888 host row into the device.
+ *
+ *  @param  dev     Pointer to @a dlo_device_t structure.
+ *  @param  src     Pointer to host RGBX8888 pixels.
+ *  @param  base16  Device address of the first 16 bpp destination pixel.
+ *  @param  base8   Device address of the first 8 bpp destination pixel.
+ *  @param  width   Width of the row in pixels.
+ *
+ *  @return  Return code, zero for no error.
+ */
+extern dlo_retcode_t dlo_grfx_copy_rgbx8888_line(dlo_device_t * const dev,
+                                                 const uint32_t * const src,
+                                                 dlo_ptr_t base16,
+                                                 dlo_ptr_t base8,
+                                                 const uint32_t width);
+
+
 #endif

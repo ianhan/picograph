@@ -866,7 +866,9 @@ void GCCopyBits2(GC *pGC, GC *pGCSrc, GCRECT *prcSrc, GCPOINT *pptDst)
     }
 
     // See if we can try and accelerate this call:
-    if (pGCSrc->bitmap.prgBits != NULL || pGCSrc->bitmap.disposition == GCDeviceDisplayOnly)
+    if (pGCSrc->bitmap.prgBits != NULL ||
+        pGCSrc->bitmap.disposition == GCDeviceDisplayOnly ||
+        pGCSrc->bitmap.disposition == GCDeviceMemory)
     {
         if (GCPAccelerate(pGC) && 
             pGCSrc->blitEffect.EffectType == GCBLIT_NORMAL &&

@@ -131,7 +131,7 @@
 #define FORMAT_TO_BYTES_PER_PIXEL(fmt) ((unsigned int)fmt > 1023u ? 1 : ((fmt) & DLO_PIXFMT_BYPP_MSK) >> DLO_PIXFMT_BYPP_SFT)
 
 /** Default buffer size for sending commands to the device. */
-#define BUF_SIZE (64*1024u)
+#define BUF_SIZE (1023*64u)
 
 /** Threshold (bytes away from being full) for flushing the command buffer before adding any more commands to it. */
 #define BUF_HIGH_WATER_MARK (1*1024u)

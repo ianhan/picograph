@@ -273,4 +273,6 @@ void GCHWAccelerateContext(GC *pGC)
     pGC->device.HWConstantAlphaBlend = (HWCONSTANTALPHABLEND)NULL;// HWConstantAlphaBlend;
     pGC->device.HWDimBuffer = (HWDIMBUFFER)HWDimBuffer;
     pGC->device.HWDrawLine = (HWDIMBUFFER)NULL;//HWDrawLine;
+    pGC->device.HWFrameBytes = (HWFRAMEBYTES)NULL;
+    pGC->device.HWPresentBase = (HWPRESENTBASE)NULL;
 }

@@ -12,10 +12,8 @@
 #include <cstring>
 
 extern "C" {
-#include "gcdlo.h"
+#include "gc.h"
 }
-
-#define DLO_HANDLE(bitmap) ((dlo_dev_t)(uintptr_t)((bitmap)->handle))
 
 namespace picomem {
 namespace {
@@ -44,10 +42,14 @@ constexpr uint64_t kTimingOne = 1ull << kTimingFracBits;
 constexpr unsigned kMaxPollStepsPerTick = 2048;
 constexpr unsigned kScanlineQueueSize = 1024;
 constexpr unsigned kScanlineQueueMask = kScanlineQueueSize - 1u;
+constexpr unsigned kDirtyLineQueueSize = 512;
+constexpr unsigned kDirtyLineQueueMask = kDirtyLineQueueSize - 1u;
 constexpr unsigned kMaxRenderLinesPerTick = 24;
 constexpr unsigned kMaxDisplayLinesPerTick = 48;
 
 static_assert((kScanlineQueueSize & kScanlineQueueMask) == 0, "scanline queue size must be a power of two");
+static_assert((kDirtyLineQueueSize & kDirtyLineQueueMask) == 0, "dirty line queue size must be a power of two");
+static_assert(kDirtyLineQueueSize > kMaxPcemLines, "dirty line queue must hold every display line");
 
 constexpr int DISPLAY_RGB = 0;
 constexpr int DISPLAY_RGB_NO_BROWN = 2;
@@ -122,6 +124,9 @@ uint32_t scanline_head;
 uint32_t scanline_tail;
 uint32_t scanline_dropped;
 uint32_t handled_scanline_dropped;
+uint16_t dirty_line_queue[kDirtyLineQueueSize];
+uint32_t dirty_line_head;
+uint32_t dirty_line_tail;
 
 bool display_initialized;
 long last_gc_width;
@@ -135,7 +140,6 @@ long dest_height;
 int display_firstline;
 unsigned display_source_width;
 unsigned display_source_height;
-unsigned display_scanline;
 bool display_frame_valid;
 
 int xsize = 1;
@@ -395,6 +399,20 @@ uint8_t get_frame_code(unsigned line, unsigned x)
     return (packed >> shift) & 0x3u;
 }
 
+void clear_dirty_line_queue()
+{
+    dirty_line_tail = dirty_line_head;
+}
+
+void queue_dirty_line(unsigned line)
+{
+    if ((dirty_line_head - dirty_line_tail) >= kDirtyLineQueueSize) {
+        return;
+    }
+    dirty_line_queue[dirty_line_head & kDirtyLineQueueMask] = (uint16_t)line;
+    dirty_line_head++;
+}
+
 void mark_frame_line_dirty_range(unsigned line, unsigned x0, unsigned x1)
 {
     if (line >= kMaxPcemLines || x0 >= x1) {
@@ -411,6 +429,7 @@ void mark_frame_line_dirty_range(unsigned line, unsigned x0, unsigned x1)
         line_dirty[line] = 1;
         line_dirty_min[line] = (uint16_t)x0;
         line_dirty_max[line] = (uint16_t)x1;
+        queue_dirty_line(line);
         return;
     }
 
@@ -451,6 +470,7 @@ void invalidate_frame_lines()
         line_dirty_min[i] = 0;
         line_dirty_max[i] = 0;
     }
+    clear_dirty_line_queue();
 }
 
 void __time_critical_func(request_frame_invalidate)()
@@ -494,7 +514,6 @@ void handle_frame_invalidation()
     invalidate_frame_lines();
     display_initialized = false;
     display_frame_valid = false;
-    display_scanline = 0;
     clear_scanline_queue();
     handled_frame_invalidate_requests = requests;
 }
@@ -653,7 +672,6 @@ void update_layout(RenderContext *ctx, unsigned source_width, unsigned source_he
     last_source_width = source_width;
     last_source_height = source_height;
     display_initialized = true;
-    display_scanline = 0;
 
     fill_display(ctx, 0, 0, gc_width, gc_height, cgapal[0]);
     mark_nonblank_frame_lines_dirty();
@@ -715,7 +733,6 @@ void handle_scanline_drops()
     }
 
     clear_scanline_queue();
-    display_scanline = 0;
     handled_scanline_dropped = scanline_dropped;
 }
 
@@ -928,18 +945,26 @@ void blit_dirty_visible_lines(RenderContext *ctx, unsigned max_lines)
 
     updatewindowsize(ctx, display_source_width, display_source_height);
 
-    unsigned scanned = 0;
-    while (scanned < max_lines && scanned < display_source_height) {
-        unsigned screen_line = display_scanline;
-        unsigned buffer_line = (unsigned)display_firstline + screen_line;
-
-        display_scanline++;
-        if (display_scanline >= display_source_height) {
-            display_scanline = 0;
-        }
-        scanned++;
-
+    unsigned drawn = 0;
+    while (drawn < max_lines && dirty_line_tail != dirty_line_head) {
+        unsigned buffer_line = dirty_line_queue[dirty_line_tail & kDirtyLineQueueMask];
+        dirty_line_tail++;
         if (buffer_line >= kMaxPcemLines || !line_dirty[buffer_line]) {
+            continue;
+        }
+
+        if (buffer_line < (unsigned)display_firstline) {
+            line_dirty[buffer_line] = 0;
+            line_dirty_min[buffer_line] = 0;
+            line_dirty_max[buffer_line] = 0;
+            continue;
+        }
+
+        unsigned screen_line = buffer_line - (unsigned)display_firstline;
+        if (screen_line >= display_source_height) {
+            line_dirty[buffer_line] = 0;
+            line_dirty_min[buffer_line] = 0;
+            line_dirty_max[buffer_line] = 0;
             continue;
         }
 
@@ -955,6 +980,7 @@ void blit_dirty_visible_lines(RenderContext *ctx, unsigned max_lines)
                         display_source_height,
                         dirty_min,
                         dirty_max);
+        drawn++;
     }
 }
 
@@ -1060,7 +1086,6 @@ uint32_t hercules_poll(hercules_t *h)
                     if (ysize < 32) {
                         ysize = 200;
                     }
-                    display_scanline = 0;
                 }
 
                 display_firstline = h->firstline;
@@ -1264,12 +1289,13 @@ void init()
     display_firstline = 0;
     display_source_width = 0;
     display_source_height = 0;
-    display_scanline = 0;
     display_frame_valid = false;
     scanline_head = 0;
     scanline_tail = 0;
     scanline_dropped = 0;
     handled_scanline_dropped = 0;
+    dirty_line_head = 0;
+    dirty_line_tail = 0;
     xsize = 1;
     ysize = 1;
     video_res_x = 0;
@@ -1308,9 +1334,6 @@ void tick()
     if (ctx.access_open) {
         GCPEndAccess(pGC);
     }
-    if (ctx.emitted) {
-        dlo_flush_usb(DLO_HANDLE(&pGC->bitmap), true);
-    }
 }
 
 IoTrap io_traps[] = {
@@ -1343,5 +1366,3 @@ const Module &hercules_module()
 }
 
 }  // namespace picomem
-
-#undef DLO_HANDLE

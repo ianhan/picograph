@@ -120,6 +120,18 @@ extern dlo_retcode_t dlo_mode_change(dlo_device_t * const dev, const dlo_mode_t 
  */
 extern dlo_retcode_t dlo_mode_set_default(dlo_device_t * const dev, uint32_t base);
 
+/** Change only the visible framebuffer base of the current mode.
+ *
+ *  @param  dev   Pointer to @a dlo_device_t structure.
+ *  @param  base  Base address of view in framebuffer. Must be two-byte aligned.
+ *
+ *  @return  Return code, zero for no error.
+ *
+ *  Note: this call will cause any buffered commands to be sent before the
+ *  visible base is changed.
+ */
+extern dlo_retcode_t dlo_mode_set_base(dlo_device_t * const dev, dlo_ptr_t base);
+
 /** Parse the EDID structure read from a display device and build a list of supported modes.
  *
  *  @param  dev   Pointer to @a dlo_device_t structure.

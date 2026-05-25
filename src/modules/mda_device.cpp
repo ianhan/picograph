@@ -10,7 +10,7 @@
 #include "mda_font_rom.h"
 
 extern "C" {
-#include "gcdlo.h"
+#include "gc.h"
 }
 
 namespace picomem {
@@ -32,8 +32,6 @@ constexpr unsigned kGlyphWidth = 8;
 constexpr unsigned kFontSlotHeight = 16;
 constexpr unsigned kCrtcAddressMask = 0x3fff;
 constexpr unsigned kMdaCellStorage = kMdaMemSize / 2;
-
-#define DLO_HANDLE(bitmap) ((dlo_dev_t)(uintptr_t)((bitmap)->handle))
 
 uint16_t mda_cells[kMdaCellStorage];
 volatile uint8_t dirty_cells[kCellCount];
@@ -502,7 +500,6 @@ void render_mda()
     bool full_redraw = redraw_requests != handled_full_redraw_request;
     uint8_t phase = blink_phase();
     bool clear_screen = false;
-    bool emitted = false;
 
     if (layout_changed(pGC)) {
         update_layout(pGC);
@@ -534,22 +531,28 @@ void render_mda()
         mark_attr_high_cells_dirty();
     }
 
-    GCPBeginAccess(pGC);
+    bool access_open = false;
+    auto begin_access = [&]() {
+        if (!access_open) {
+            GCPBeginAccess(pGC);
+            access_open = true;
+        }
+    };
+
     if (clear_screen) {
+        begin_access();
         GCFastFill(pGC, 0, 0, GCWidth(pGC), GCHeight(pGC), RGB(0, 0, 0));
         screen_dark = true;
-        emitted = true;
     }
 
     if ((mda_control_reg & 0x08u) == 0) {
         if (!screen_dark) {
+            begin_access();
             GCFastFill(pGC, 0, 0, GCWidth(pGC), GCHeight(pGC), RGB(0, 0, 0));
             screen_dark = true;
-            emitted = true;
         }
-        GCPEndAccess(pGC);
-        if (emitted) {
-            dlo_flush_usb(DLO_HANDLE(&pGC->bitmap), true);
+        if (access_open) {
+            GCPEndAccess(pGC);
         }
         return;
     }
@@ -559,13 +562,11 @@ void render_mda()
         if (!__atomic_exchange_n(&dirty_cells[i], 0u, __ATOMIC_ACQ_REL)) {
             continue;
         }
+        begin_access();
         draw_cell(pGC, i, phase);
-        emitted = true;
     }
-    GCPEndAccess(pGC);
-
-    if (emitted) {
-        dlo_flush_usb(DLO_HANDLE(&pGC->bitmap), true);
+    if (access_open) {
+        GCPEndAccess(pGC);
     }
 }
 

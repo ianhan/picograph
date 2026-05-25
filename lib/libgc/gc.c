@@ -23,11 +23,13 @@ void GCPSetDefaults(GC *pGC, GC *pGCSource)
     pGC->blitEffect.EffectType = GCBLIT_NORMAL;
     pGC->blitEffect.param = 0;
     pGC->pGCCacheGradient = NULL;
+    pGC->pPuntGC = NULL;
     pGC->PuntWorkArea.left = pGC->PuntWorkArea.top = pGC->PuntWorkArea.right  = pGC->PuntWorkArea.bottom = 0;
         
     if (pGCSource)
     {
         pGC->device = pGCSource->device;
+        pGC->device.entryLevel = 0;
     }
 }
 
@@ -41,6 +43,7 @@ GCBOOL GCInitialize(HWSETUPDEVICE HWCBSetupDevice, void *param, GC *pGC)
 void GCInitializeBitmap(GCBITMAP *pGCBitmap, long width, long height, unsigned long handle, GCBITMAPDISPOSITION disposition)
 {
     pGCBitmap->disposition = disposition;
+    pGCBitmap->deviceBase = 0;
     pGCBitmap->handle = handle;
     pGCBitmap->width = width;
     pGCBitmap->height = height;
@@ -71,6 +74,8 @@ GCBOOL GCCreateWithSystemMemory(GC *pGCSource, long width, long height, GC *pGC)
     pGC->device.HWSetPixel           = (HWSETPIXEL)SWMemSetPixel;
     pGC->device.HWColorFill          = (HWCOLORFILL)SWMemColorFill;
     pGC->device.HWCopyBits           = (HWCOPYBITS)SWMemCopyBits;
+    pGC->device.HWFrameBytes         = (HWFRAMEBYTES)NULL;
+    pGC->device.HWPresentBase        = (HWPRESENTBASE)NULL;
     pGC->bitmap.pGC = pGC;
     GCInitializeBitmap(&pGC->bitmap, width, height, (unsigned long) prgBits, GCSystemMemoryManaged);
     return GCTRUE;
@@ -85,6 +90,8 @@ GCBOOL GCCreateWithPreallocatedMemory(GC *pGCSource, long width, long height, GC
     pGC->device.HWSetPixel           = (HWSETPIXEL)SWMemSetPixel;
     pGC->device.HWColorFill          = (HWCOLORFILL)SWMemColorFill;
     pGC->device.HWCopyBits           = (HWCOPYBITS)SWMemCopyBits;
+    pGC->device.HWFrameBytes         = (HWFRAMEBYTES)NULL;
+    pGC->device.HWPresentBase        = (HWPRESENTBASE)NULL;
     pGC->bitmap.pGC = pGC;
     GCInitializeBitmap(&pGC->bitmap, width, height, (unsigned long) prgBits, GCSystemMemoryPreAllocated);
     return GCTRUE;
@@ -93,13 +100,22 @@ GCBOOL GCCreateWithPreallocatedMemory(GC *pGCSource, long width, long height, GC
 GCBOOL GCCreateWithDeviceMemory(GC *pGCSource, long width, long height, GC *pGC)
 {
     GCPSetDefaults(pGC, pGCSource);
-    
+    pGC->bitmap.pGC = pGC;
+    GCInitializeBitmap(&pGC->bitmap,
+                       width,
+                       height,
+                       pGCSource->bitmap.handle,
+                       GCDeviceMemory);
+    pGC->bitmap.deviceBase = pGCSource->bitmap.deviceBase;
+    pGC->bitmap.pDevice = &pGC->device;
+    pGC->device.hDevice = &pGC->bitmap;
     return GCTRUE;
 }
 
 GCBOOL GCCreateWithMatchingMemoryLocale(GC *pGCSource, long width, long height, GC *pGC)
 {
-    return pGCSource->bitmap.disposition == GCDeviceMemory ? 
+    return (pGCSource->bitmap.disposition == GCDeviceMemory ||
+            pGCSource->bitmap.disposition == GCDeviceDisplayOnly) ?
         GCCreateWithDeviceMemory(pGCSource, width, height, pGC) :
         GCCreateWithSystemMemory(pGCSource, width, height, pGC);
 }
@@ -108,14 +124,21 @@ GCBOOL GCCreatePuntSurface(GC *pGCSource, GCRECT *pWorkArea, GCBOOL initialize, 
 {
     GCBOOL gcRet = GCFALSE;
 
+    if (!pGCSource || !pWorkArea || !pGCPuntSurface || EMPTYRECT(pWorkArea))
+        return GCFALSE;
+
     if (GCTRUE == (gcRet = GCCreateWithSystemMemory(pGCSource, RECTWIDTH(pWorkArea), RECTHEIGHT(pWorkArea), pGCPuntSurface)))
     {
         GCPOINT point = {0, 0};
         if (initialize)
         {
+            unsigned long flags = pGCPuntSurface->flags;
+            pGCPuntSurface->flags |= GCF_DISABLEACCELERATION;
             GCCopyBits2(pGCPuntSurface, pGCSource, pWorkArea, &point);
+            pGCPuntSurface->flags = flags;
         }
         pGCPuntSurface->PuntWorkArea = *pWorkArea;
+        pGCPuntSurface->pPuntGC = pGCSource;
         pGCPuntSurface->bitmap.disposition = GCSystemMemoryPuntSurface;
     }
 
@@ -127,10 +150,13 @@ void GCDelete(GC *pGC)
     //  TODO: device free
     if (pGC->bitmap.disposition == GCSystemMemoryPuntSurface)
     {
-        GCPOINT point = {pGC->PuntWorkArea.left, pGC->PuntWorkArea.top};
-        GCRECT dest = pGC->PuntWorkArea;
-        OFFSETRECT((&dest), point.x, point.y);
-        GCCopyBits2(pGC, pGC->pPuntGC, &dest, &point);
+        if (pGC->pPuntGC)
+        {
+            GCPOINT point = {pGC->PuntWorkArea.left, pGC->PuntWorkArea.top};
+            GCRECT source = {0, 0, pGC->bitmap.width, pGC->bitmap.height};
+            GCCopyBits2(pGC->pPuntGC, pGC, &source, &point);
+        }
+        pGC->pPuntGC = NULL;
         pGC->bitmap.disposition = GCSystemMemoryManaged;
     }
     if (pGC->bitmap.disposition == GCSystemMemoryManaged)

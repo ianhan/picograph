@@ -207,6 +207,8 @@ GCBOOL OLED_HWSetupDevice(GCDEVICE *pDevice, GCBITMAP *pDisplaySurface, GCHWBITM
     pDevice->HWConstantAlphaBlend = (HWCONSTANTALPHABLEND)NULL;// HWConstantAlphaBlend;
     pDevice->HWTransparentBlt = (HWTRANSPARENTBLT)NULL;
     pDevice->HWDimBuffer = (HWDIMBUFFER)NULL;
+    pDevice->HWFrameBytes = (HWFRAMEBYTES)NULL;
+    pDevice->HWPresentBase = (HWPRESENTBASE)NULL;
     pDevice->hDevice = pDisplaySurface;
     GCInitializeBitmap(pDisplaySurface, param->width, param->height, param->address, GCDeviceDisplayOnly);
     return GCTRUE;

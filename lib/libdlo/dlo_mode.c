@@ -52,6 +52,9 @@ const uint32_t endian = 1;
  */
 #define WRITE_VIDREG_UNLOCK "\xAF\x20\xFF\xFF\xAF\xA0"
 
+/** Command bytes needed to update both 16 bpp and 8 bpp frame base registers. */
+#define SET_BASE_COMMAND_BYTES (DSIZEOF(WRITE_VIDREG_LOCK) + (6u * 4u) + DSIZEOF(WRITE_VIDREG_UNLOCK))
+
 /** Return non-zero if the host is big endian or zero if the host is little endian.
  */
 #define IS_BIGENDIAN() ((*(char*)&endian) == '\0')
@@ -406,6 +409,40 @@ dlo_retcode_t dlo_mode_set_default(dlo_device_t * const dev, uint32_t base)
   /* The first timing block is the preferred mode of the monitor */
   DPRINTF("mode: dlo_mode_set_default (setting monitor preferred mode)\n");
   return mode_set_from_edid(dev, &dev->edid.timings[0], base);
+}
+
+dlo_retcode_t dlo_mode_set_base(dlo_device_t * const dev, dlo_ptr_t base)
+{
+  dlo_ptr_t base8;
+  dlo_retcode_t err;
+
+  if (!dev)
+    return dlo_err_bad_device;
+
+  if (!dev->mode.view.width || !dev->mode.view.height)
+    return dlo_err_bad_mode;
+
+  if (base & 1)
+    return dlo_err_bad_mode;
+
+  /* Keep the base switch ordered after pending drawing commands, flushing only
+   * if there is not enough room to append it to the same bulk transfer.
+   */
+  if ((size_t)(dev->bufend - dev->bufptr) < SET_BASE_COMMAND_BYTES)
+  {
+    err = dlo_usb_write(dev);
+    if (dlo_ok != err)
+      return err;
+  }
+
+  base8 = base + (BYTES_PER_16BPP * dev->mode.view.width * dev->mode.view.height);
+  err = set_base(dev, base, base8);
+  if (dlo_ok != err)
+    return err;
+
+  dev->mode.view.base = base;
+  dev->base8 = base8;
+  return dlo_ok;
 }
 
 

@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 extern "C" {
-#include "gcdlo.h"
+#include "gc.h"
 }
 
 namespace picomem {
@@ -13,8 +13,6 @@ namespace {
 #if !PICOMEM_ENABLE_DISPLAYLINK || !PICOMEM_ENABLE_GC
 #error "The register view module requires PICOMEM_ENABLE_DISPLAYLINK and PICOMEM_ENABLE_GC"
 #endif
-
-#define DLO_HANDLE(bitmap) ((dlo_dev_t)(uintptr_t)((bitmap)->handle))
 
 constexpr uint16_t kMcgaBase = 0x3c0;
 constexpr uint16_t kMcgaLength = 0x20;
@@ -1434,6 +1432,16 @@ void DrawPostCodes(GC *pGC, long textX, long textY, long textWidth)
     GCSetBackgroundColor(pGC, oldBackground);
 }
 
+bool PaletteChanged()
+{
+    for (unsigned i = 0; i < 256; ++i) {
+        if (syspalette[i] != syspalette2[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Task_UpdatePalette()
 {
     GC* pGC = GCDisplay();
@@ -1452,7 +1460,14 @@ void Task_UpdatePalette()
         long registerY = 0;
         long registerWidth = mainSeparatorX >= registerX ? mainSeparatorX - registerX + 1 : GCWidth(pGC);
         long registerHeight = GCHeight(pGC);
+        bool paletteDirty = PaletteChanged();
         bool redrawPanelSeparators = mcga_register_dirty || post_code_dirty;
+
+        if (!paletteDirty && !redrawPanelSeparators) {
+            return;
+        }
+
+        GCPBeginAccess(pGC);
 
         if (mcga_register_dirty) {
             DrawMcgaRegisters(pGC, registerX, registerY, registerWidth, registerHeight);
@@ -1462,12 +1477,14 @@ void Task_UpdatePalette()
             DrawPostCodes(pGC, postX, postY, paletteWidth);
             post_code_dirty = false;
         }
-        DrawPalette(pGC, paletteX, paletteY, paletteWidth, paletteHeight);
+        if (paletteDirty) {
+            DrawPalette(pGC, paletteX, paletteY, paletteWidth, paletteHeight);
+        }
         if (redrawPanelSeparators) {
             draw_overlay_separator(pGC, mainSeparatorX, 0, 1, GCHeight(pGC));
             draw_overlay_separator(pGC, mainSeparatorX, postSeparatorY, GCWidth(pGC) - mainSeparatorX, 1);
         }
-        dlo_flush_usb(DLO_HANDLE(&pGC->bitmap), true);
+        GCPEndAccess(pGC);
     }
 }
 
@@ -1615,8 +1632,6 @@ const Module module = {
     init,
     tick,
 };
-
-#undef DLO_HANDLE
 
 }  // namespace
 

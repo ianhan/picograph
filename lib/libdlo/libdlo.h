@@ -706,6 +706,27 @@ extern dlo_devinfo_t *dlo_device_info(const dlo_dev_t uid);
  */
 extern dlo_retcode_t dlo_set_mode(const dlo_dev_t uid, const dlo_mode_t * const mode);
 
+/** Change only the visible framebuffer base address of the current screen mode.
+ *
+ *  @param  uid   Unique ID of the device to access.
+ *  @param  base  Base address in device memory. Must be two-byte aligned.
+ *
+ *  @return  Return code, zero for no error.
+ *
+ *  This is intended for page-flipping between same-sized viewports without
+ *  reprogramming mode timings.
+ */
+extern dlo_retcode_t dlo_set_view_base(const dlo_dev_t uid, const dlo_ptr_t base);
+
+
+/** Returns the number of bytes currently buffered for USB bulk output.
+ *
+ *  @param  uid  Unique ID of the device to access.
+ *
+ *  @return  Number of pending command bytes, or zero if the device is invalid.
+ */
+extern size_t dlo_pending_usb_bytes(const dlo_dev_t uid);
+
 
 /** Returns a block of information about the current screen mode.
  *
@@ -746,6 +767,27 @@ extern dlo_retcode_t dlo_fill_rect(const dlo_dev_t uid,
                                    const dlo_col32_t col);
 
 
+/** Plot an unclipped filled rectangle into a viewport.
+ *
+ *  @param  uid     Unique ID of the device to access.
+ *  @param  view    Struct pointer: destination viewport, or NULL for current visible viewport.
+ *  @param  x       Destination x co-ordinate.
+ *  @param  y       Destination y co-ordinate.
+ *  @param  width   Width of the rectangle in pixels.
+ *  @param  height  Height of the rectangle in pixels.
+ *  @param  col     Colour of filled rectangle.
+ *
+ *  @return  Return code, zero for no error.
+ */
+extern dlo_retcode_t dlo_fill_rect_unclipped(const dlo_dev_t uid,
+                                             const dlo_view_t * const view,
+                                             int32_t x,
+                                             int32_t y,
+                                             uint32_t width,
+                                             uint32_t height,
+                                             const dlo_col32_t col);
+
+
 /** Copy a rectangular area within the device from one location to another.
  *
  *  @param  uid        Unique ID of the device to access.
@@ -776,6 +818,31 @@ extern dlo_retcode_t dlo_copy_rect(const dlo_dev_t uid,
                                    const dlo_view_t * const dest_view, const dlo_dot_t * const dest_pos);
 
 
+/** Copy an unclipped rectangular area within the device from one location to another.
+ *
+ *  @param  uid        Unique ID of the device to access.
+ *  @param  src_view   Struct pointer: source viewport, or NULL for current visible viewport.
+ *  @param  dest_view  Struct pointer: destination viewport, or NULL for current visible viewport.
+ *  @param  src_x      Source x co-ordinate.
+ *  @param  src_y      Source y co-ordinate.
+ *  @param  width      Width of the rectangle in pixels.
+ *  @param  height     Height of the rectangle in pixels.
+ *  @param  dest_x     Destination x co-ordinate.
+ *  @param  dest_y     Destination y co-ordinate.
+ *
+ *  @return  Return code, zero for no error.
+ */
+extern dlo_retcode_t dlo_copy_rect_unclipped(const dlo_dev_t uid,
+                                             const dlo_view_t * const src_view,
+                                             const dlo_view_t * const dest_view,
+                                             int32_t src_x,
+                                             int32_t src_y,
+                                             uint32_t width,
+                                             uint32_t height,
+                                             int32_t dest_x,
+                                             int32_t dest_y);
+
+
 /** Copy (and translate pixel formats) a rectangular area from host memory into the device.
  *
  *  @param  uid        Unique ID of the device to access.
@@ -798,8 +865,28 @@ extern dlo_retcode_t dlo_copy_host_bmp(const dlo_dev_t uid, const dlo_bmpflags_t
                                        const dlo_fbuf_t * const fbuf,
                                        const dlo_view_t * const dest_view, const dlo_dot_t * const dest_pos);
 
+
+/** Copy one unclipped RGBX8888 host row into a viewport.
+ *
+ *  @param  uid        Unique ID of the device to access.
+ *  @param  dest_view  Struct pointer: destination viewport, or NULL for current visible viewport.
+ *  @param  x          Destination x co-ordinate.
+ *  @param  y          Destination y co-ordinate.
+ *  @param  pixels     Host RGBX8888 pixel row.
+ *  @param  width      Width of the row in pixels.
+ *
+ *  @return  Return code, zero for no error.
+ */
+extern dlo_retcode_t dlo_copy_rgbx8888_line(const dlo_dev_t uid,
+                                            const dlo_view_t * const dest_view,
+                                            int32_t x,
+                                            int32_t y,
+                                            const uint32_t * const pixels,
+                                            uint32_t width);
+
 extern dlo_retcode_t dlo_check_device(uint8_t daddr);
 extern dlo_retcode_t dlo_flush_usb(const dlo_dev_t uid, bool force);
+extern dlo_retcode_t dlo_discard_usb(const dlo_dev_t uid);
 __attribute__ ((weak))  void dlo_device_configured (dlo_dev_t uid);
 
 #ifdef __cplusplus

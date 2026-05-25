@@ -116,6 +116,8 @@ typedef void (*HWDRAWLINE)(GCBITMAP *pBitmap, long x, long y, long yMajor, doubl
 typedef void (*HWBEGINACCESS)(GCBITMAP *pBitmap);
 typedef void (*HWENDACCESS)(GCBITMAP *pBitmap);
 typedef void (*HWDIMBUFFER)(GCBITMAP *pBitmap);
+typedef unsigned long (*HWFRAMEBYTES)(GCBITMAP *pBitmap);
+typedef GCBOOL (*HWPRESENTBASE)(GCBITMAP *pBitmap, unsigned long base);
 
 void SWMemSetPixel(GCBITMAP *pBitmap, long x, long y, GCCOLOR color);
 GCCOLOR SWMemGetPixel(GCBITMAP *pBitmap, long x, long y);
@@ -174,6 +176,8 @@ typedef struct tagGCDEVICE {
     HWTRANSPARENTBLT HWTransparentBlt;
     HWDIMBUFFER HWDimBuffer;
     HWDRAWLINE HWDrawLine;
+    HWFRAMEBYTES HWFrameBytes;
+    HWPRESENTBASE HWPresentBase;
     void* hDevice;
     unsigned long entryLevel;
 } GCDEVICE, *PGCDEVICE;
@@ -190,6 +194,7 @@ typedef struct tagGCBITMAP {
     GCBITMAPDISPOSITION disposition;
     long width;
     long height;
+    unsigned long deviceBase;
     union {
         unsigned long handle;
         GCCOLOR *prgBits;
@@ -282,6 +287,12 @@ unsigned long GCColorTo888(GCCOLOR color);
 
 long GCWidth(GC *pGC);
 long GCHeight(GC *pGC);
+PGC GCDisplay(void);
+unsigned long GCDeviceFrameBytes(GC *pGC);
+unsigned long GCDeviceBase(GC *pGC);
+void GCSetDeviceBase(GC *pGC, unsigned long deviceBase);
+GCBOOL GCPresentDeviceBase(GC *pGC, unsigned long base);
+GCBOOL GCPresentDeviceDrawBase(GC *pGC);
 
 void GCSetBackgroundColor(GC *pGC, GCCOLOR color);
 void GCSetForegroundColor(GC *pGC, GCCOLOR color);

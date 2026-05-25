@@ -59,6 +59,9 @@
  */
 #define ID_TIMEOUT (1000u)
 
+/** Largest full-speed bulk transfer that fits TinyUSB's uint16_t HCD length. */
+#define WRITE_MAX_XFER_BYTES (1023u * 64u)
+
 /** Byte sequence to send to the device to select the default communication channel.
  */
 #define STD_CHANNEL "\x57\xCD\xDC\xA7\x1C\x88\x5E\x15\x60\xFE\xC6\x97\x16\x3D\x47\xF2"
@@ -545,6 +548,15 @@ dlo_retcode_t dlo_usb_write(dlo_device_t * const dev)
   return err;
 }
 
+dlo_retcode_t dlo_usb_discard(dlo_device_t * const dev)
+{
+  if (!dev)
+    return dlo_err_bad_device;
+
+  dev->bufptr = dev->buffer;
+  return dlo_ok;
+}
+
 
 void dlo_xfer_cb(tuh_xfer_t* xfer) {}
 
@@ -582,7 +594,7 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
 
   while (size)
   {
-    size_t num = size > BUF_SIZE ? BUF_SIZE : size;
+    size_t num = size > WRITE_MAX_XFER_BYTES ? WRITE_MAX_XFER_BYTES : size;
 
 #ifdef DEBUG_DUMP
     (void) snprintf(outfile, sizeof(outfile), "dump/%02X/bulk%03X.dat", outnum & 0xFF, outnum >> 8);
@@ -607,7 +619,8 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
     };
 
     // submit transfer for this EP
-    tuh_edpt_xfer(&xfer);
+    if (!tuh_edpt_xfer(&xfer))
+      return dlo_err_usb;
 
     // actually synchronous please
     while (usbh_edpt_busy(dev->cnct->udev, dev->cnct->uhand)) {

@@ -620,6 +620,37 @@ dlo_retcode_t dlo_set_mode(const dlo_dev_t uid, const dlo_mode_t * const desc)
   return num == DLO_INVALID_MODE ? dlo_err_bad_mode : dlo_mode_change(dev, desc, num);
 }
 
+dlo_retcode_t dlo_set_view_base(const dlo_dev_t uid, const dlo_ptr_t base)
+{
+  dlo_device_t *dev = (dlo_device_t *)uid;
+
+  if (!dev)
+    return dlo_err_bad_device;
+
+  return dlo_mode_set_base(dev, base);
+}
+
+
+size_t dlo_pending_usb_bytes(const dlo_dev_t uid)
+{
+  dlo_device_t *dev = (dlo_device_t *)uid;
+
+  if (!dev || !dev->buffer || !dev->bufptr)
+    return 0;
+
+  return (size_t)(dev->bufptr - dev->buffer);
+}
+
+dlo_retcode_t dlo_discard_usb(const dlo_dev_t uid)
+{
+  dlo_device_t *dev = (dlo_device_t *)uid;
+
+  if (!dev)
+    return dlo_err_bad_device;
+
+  return dlo_usb_discard(dev);
+}
+
 
 dlo_mode_t *dlo_get_mode(const dlo_dev_t uid)
 {
@@ -642,6 +673,47 @@ dlo_retcode_t dlo_fill_rect(const dlo_dev_t uid, const dlo_view_t * const view, 
   if (!sanitise_view_rect(dev, view, rec, &area, &clip))
     return dlo_ok;
 
+  return dlo_grfx_fill_rect(dev, &area, col);
+}
+
+
+dlo_retcode_t dlo_fill_rect_unclipped(const dlo_dev_t uid,
+                                      const dlo_view_t * const dest_view,
+                                      int32_t x,
+                                      int32_t y,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      const dlo_col32_t col)
+{
+  dlo_device_t * const dev = (dlo_device_t *)uid;
+  const dlo_view_t * const view = dest_view ? dest_view : (dev ? &(dev->mode.view) : NULL);
+  dlo_area_t area;
+  uint32_t pix_off;
+
+  if (!dev)
+    return dlo_err_bad_device;
+
+  if (!width || !height)
+    return dlo_ok;
+
+  if (!view || !view->width || !view->height ||
+      x < 0 || y < 0 ||
+      (uint32_t)x >= view->width ||
+      (uint32_t)y >= view->height ||
+      width > (uint32_t)view->width - (uint32_t)x ||
+      height > (uint32_t)view->height - (uint32_t)y)
+    return dlo_err_bad_view;
+
+  if (view->bpp != 24)
+    return dlo_err_bad_col;
+
+  pix_off = (uint32_t)x + ((uint32_t)y * view->width);
+  area.view.width = (uint16_t)width;
+  area.view.height = (uint16_t)height;
+  area.view.bpp = view->bpp;
+  area.view.base = view->base + (BYTES_PER_16BPP * pix_off);
+  area.base8 = view->base + (BYTES_PER_16BPP * view->width * view->height) + pix_off;
+  area.stride = view->width;
   return dlo_grfx_fill_rect(dev, &area, col);
 }
 
@@ -704,6 +776,71 @@ dlo_retcode_t dlo_copy_rect(const dlo_dev_t uid,
 }
 
 
+dlo_retcode_t dlo_copy_rect_unclipped(const dlo_dev_t uid,
+                                      const dlo_view_t * const source_view,
+                                      const dlo_view_t * const target_view,
+                                      int32_t src_x,
+                                      int32_t src_y,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      int32_t dest_x,
+                                      int32_t dest_y)
+{
+  dlo_device_t * const dev = (dlo_device_t *)uid;
+  const dlo_view_t * const src_view = source_view ? source_view : (dev ? &(dev->mode.view) : NULL);
+  const dlo_view_t * const dest_view = target_view ? target_view : (dev ? &(dev->mode.view) : NULL);
+  dlo_area_t src_area;
+  dlo_area_t dest_area;
+  uint32_t src_off;
+  uint32_t dest_off;
+
+  if (!dev)
+    return dlo_err_bad_device;
+
+  if (!width || !height)
+    return dlo_ok;
+
+  if (!src_view || !dest_view ||
+      !src_view->width || !src_view->height ||
+      !dest_view->width || !dest_view->height ||
+      src_view->bpp != dest_view->bpp)
+    return dlo_err_bad_view;
+
+  if (src_view->bpp != 24)
+    return dlo_err_bad_col;
+
+  if (src_x < 0 || src_y < 0 || dest_x < 0 || dest_y < 0 ||
+      (uint32_t)src_x >= src_view->width ||
+      (uint32_t)src_y >= src_view->height ||
+      (uint32_t)dest_x >= dest_view->width ||
+      (uint32_t)dest_y >= dest_view->height ||
+      width > (uint32_t)src_view->width - (uint32_t)src_x ||
+      height > (uint32_t)src_view->height - (uint32_t)src_y ||
+      width > (uint32_t)dest_view->width - (uint32_t)dest_x ||
+      height > (uint32_t)dest_view->height - (uint32_t)dest_y)
+    return dlo_err_bad_view;
+
+  src_off = (uint32_t)src_x + ((uint32_t)src_y * src_view->width);
+  dest_off = (uint32_t)dest_x + ((uint32_t)dest_y * dest_view->width);
+
+  src_area.view.width = (uint16_t)width;
+  src_area.view.height = (uint16_t)height;
+  src_area.view.bpp = src_view->bpp;
+  src_area.view.base = src_view->base + (BYTES_PER_16BPP * src_off);
+  src_area.base8 = src_view->base + (BYTES_PER_16BPP * src_view->width * src_view->height) + src_off;
+  src_area.stride = src_view->width;
+
+  dest_area.view.width = (uint16_t)width;
+  dest_area.view.height = (uint16_t)height;
+  dest_area.view.bpp = dest_view->bpp;
+  dest_area.view.base = dest_view->base + (BYTES_PER_16BPP * dest_off);
+  dest_area.base8 = dest_view->base + (BYTES_PER_16BPP * dest_view->width * dest_view->height) + dest_off;
+  dest_area.stride = dest_view->width;
+
+  return dlo_grfx_copy_rect(dev, &src_area, &dest_area, false);
+}
+
+
 dlo_retcode_t dlo_copy_host_bmp(const dlo_dev_t uid, const dlo_bmpflags_t flags,
                              const dlo_fbuf_t * const fbuf,
                              const dlo_view_t * const dest_view, const dlo_dot_t * const dest_pos)
@@ -742,6 +879,45 @@ dlo_retcode_t dlo_copy_host_bmp(const dlo_dev_t uid, const dlo_bmpflags_t flags,
   src_fbuf.height -= clip.below + clip.above;
 
   return dlo_grfx_copy_host_bmp(dev, flags, &src_fbuf, &dest_area);
+}
+
+
+dlo_retcode_t dlo_copy_rgbx8888_line(const dlo_dev_t uid,
+                                     const dlo_view_t * const dest_view,
+                                     int32_t x,
+                                     int32_t y,
+                                     const uint32_t * const pixels,
+                                     uint32_t width)
+{
+  dlo_device_t * const dev = (dlo_device_t *)uid;
+  const dlo_view_t * const view = dest_view ? dest_view : (dev ? &(dev->mode.view) : NULL);
+  uint32_t pix_off;
+  dlo_ptr_t base16;
+  dlo_ptr_t base8;
+
+  if (!dev)
+    return dlo_err_bad_device;
+
+  if (!pixels)
+    return dlo_err_bad_fbuf;
+
+  if (!width)
+    return dlo_ok;
+
+  if (!view || !view->width || !view->height ||
+      x < 0 || y < 0 ||
+      (uint32_t)x >= view->width ||
+      (uint32_t)y >= view->height ||
+      width > (uint32_t)view->width - (uint32_t)x)
+    return dlo_err_bad_view;
+
+  if (view->bpp != 24)
+    return dlo_err_bad_col;
+
+  pix_off = (uint32_t)x + ((uint32_t)y * view->width);
+  base16 = view->base + (BYTES_PER_16BPP * pix_off);
+  base8 = view->base + (BYTES_PER_16BPP * view->width * view->height) + pix_off;
+  return dlo_grfx_copy_rgbx8888_line(dev, pixels, base16, base8, width);
 }
 
 

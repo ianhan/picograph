@@ -3,6 +3,7 @@
 
 #include "gc.h"
 #include "libdlo.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,8 +14,6 @@ GCBOOL GCDisplayLinkCreate(
     dlo_dev_t uid);
 
 void GCDisplayLinkShutDown(GC *pGC);
-
-PGC GCDisplay(void);
 
 #ifdef __cplusplus
 }
