@@ -1,5 +1,6 @@
 #include "picomem/module.h"
 
+#include "modules/dlodirty.h"
 #include "pcem_mda_rom.h"
 
 #include "hardware/timer.h"
@@ -10,10 +11,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-
-extern "C" {
-#include "gc.h"
-}
 
 namespace picomem {
 namespace {
@@ -31,25 +28,11 @@ constexpr uint16_t kCrtcAddressMask = 0x3fff;
 
 constexpr unsigned kMaxPcemWidth = 1024;
 constexpr unsigned kMaxPcemLines = 500;
-constexpr unsigned kPackedPixelsPerByte = 4;
-constexpr unsigned kBitsPerPackedPixel = 2;
-constexpr unsigned kFrameLineBytes = (kMaxPcemWidth + kPackedPixelsPerByte - 1) / kPackedPixelsPerByte;
-constexpr unsigned kFrameBufferBytes = kFrameLineBytes * kMaxPcemLines;
 
 constexpr uint32_t kMdaCharClockHz = 2032125u;
 constexpr unsigned kTimingFracBits = 16;
 constexpr uint64_t kTimingOne = 1ull << kTimingFracBits;
 constexpr unsigned kMaxPollStepsPerTick = 2048;
-constexpr unsigned kScanlineQueueSize = 1024;
-constexpr unsigned kScanlineQueueMask = kScanlineQueueSize - 1u;
-constexpr unsigned kDirtyLineQueueSize = 512;
-constexpr unsigned kDirtyLineQueueMask = kDirtyLineQueueSize - 1u;
-constexpr unsigned kMaxRenderLinesPerTick = 24;
-constexpr unsigned kMaxDisplayLinesPerTick = 48;
-
-static_assert((kScanlineQueueSize & kScanlineQueueMask) == 0, "scanline queue size must be a power of two");
-static_assert((kDirtyLineQueueSize & kDirtyLineQueueMask) == 0, "dirty line queue size must be a power of two");
-static_assert(kDirtyLineQueueSize > kMaxPcemLines, "dirty line queue must hold every display line");
 
 constexpr int DISPLAY_RGB = 0;
 constexpr int DISPLAY_RGB_NO_BROWN = 2;
@@ -84,11 +67,7 @@ typedef struct hercules_t {
     uint8_t vram[kHercVramSize];
 } hercules_t;
 
-struct RenderContext {
-    PGC pGC;
-    bool access_open;
-    bool emitted;
-};
+using RenderContext = DloDirtyDisplay::RenderContext;
 
 struct ScanlineSnapshot {
     uint16_t ma;
@@ -108,39 +87,12 @@ hercules_t hercules;
 GCCOLOR mdacols[256][2][2];
 GCCOLOR cgapal[16];
 GCCOLOR line_buffer[kMaxPcemWidth];
-uint8_t frame_buffer[kMaxPcemLines][kFrameLineBytes];
 uint8_t fontdatm[2048][16];
 uint8_t fontdat[2048][8];
+DloDirtyDisplay display;
 
-uint32_t line_hash[kMaxPcemLines];
-uint16_t line_width[kMaxPcemLines];
-uint8_t line_dirty[kMaxPcemLines];
-uint16_t line_dirty_min[kMaxPcemLines];
-uint16_t line_dirty_max[kMaxPcemLines];
 volatile uint32_t frame_invalidate_requests;
 uint32_t handled_frame_invalidate_requests;
-ScanlineSnapshot scanline_queue[kScanlineQueueSize];
-uint32_t scanline_head;
-uint32_t scanline_tail;
-uint32_t scanline_dropped;
-uint32_t handled_scanline_dropped;
-uint16_t dirty_line_queue[kDirtyLineQueueSize];
-uint32_t dirty_line_head;
-uint32_t dirty_line_tail;
-
-bool display_initialized;
-long last_gc_width;
-long last_gc_height;
-unsigned last_source_width;
-unsigned last_source_height;
-long origin_x;
-long origin_y;
-long dest_width;
-long dest_height;
-int display_firstline;
-unsigned display_source_width;
-unsigned display_source_height;
-bool display_frame_valid;
 
 int xsize = 1;
 int ysize = 1;
@@ -382,100 +334,25 @@ bool crtc_write_invalidates_frame(uint8_t reg)
     }
 }
 
-uint32_t fnv1a(const uint8_t *data, size_t length)
+bool crtc_write_affects_pixels(uint8_t reg)
 {
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; i < length; ++i) {
-        hash ^= data[i];
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-uint8_t get_frame_code(unsigned line, unsigned x)
-{
-    uint8_t packed = frame_buffer[line][x / kPackedPixelsPerByte];
-    unsigned shift = (x % kPackedPixelsPerByte) * kBitsPerPackedPixel;
-    return (packed >> shift) & 0x3u;
-}
-
-void clear_dirty_line_queue()
-{
-    dirty_line_tail = dirty_line_head;
-}
-
-void queue_dirty_line(unsigned line)
-{
-    if ((dirty_line_head - dirty_line_tail) >= kDirtyLineQueueSize) {
-        return;
-    }
-    dirty_line_queue[dirty_line_head & kDirtyLineQueueMask] = (uint16_t)line;
-    dirty_line_head++;
-}
-
-void mark_frame_line_dirty_range(unsigned line, unsigned x0, unsigned x1)
-{
-    if (line >= kMaxPcemLines || x0 >= x1) {
-        return;
-    }
-
-    x0 = std::min<unsigned>(x0, kMaxPcemWidth);
-    x1 = std::min<unsigned>(x1, kMaxPcemWidth);
-    if (x0 >= x1) {
-        return;
-    }
-
-    if (!line_dirty[line]) {
-        line_dirty[line] = 1;
-        line_dirty_min[line] = (uint16_t)x0;
-        line_dirty_max[line] = (uint16_t)x1;
-        queue_dirty_line(line);
-        return;
-    }
-
-    line_dirty_min[line] = (uint16_t)std::min<unsigned>(line_dirty_min[line], x0);
-    line_dirty_max[line] = (uint16_t)std::max<unsigned>(line_dirty_max[line], x1);
-}
-
-bool frame_line_has_visible_pixels(unsigned line)
-{
-    if (line >= kMaxPcemLines || line_width[line] == 0) {
+    switch (reg) {
+    case 10:  // cursor start / cursor disable
+    case 11:  // cursor end
+    case 12:  // display start high
+    case 13:  // display start low
+    case 14:  // cursor address high
+    case 15:  // cursor address low
+        return true;
+    default:
         return false;
     }
-
-    unsigned bytes = (line_width[line] + kPackedPixelsPerByte - 1u) / kPackedPixelsPerByte;
-    for (unsigned i = 0; i < bytes; ++i) {
-        if (frame_buffer[line][i] != 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void mark_nonblank_frame_lines_dirty()
-{
-    for (unsigned i = 0; i < kMaxPcemLines; ++i) {
-        if (frame_line_has_visible_pixels(i)) {
-            mark_frame_line_dirty_range(i, 0, line_width[i]);
-        }
-    }
-}
-
-void invalidate_frame_lines()
-{
-    for (unsigned i = 0; i < kMaxPcemLines; ++i) {
-        line_hash[i] = 0;
-        line_width[i] = 0;
-        line_dirty[i] = 0;
-        line_dirty_min[i] = 0;
-        line_dirty_max[i] = 0;
-    }
-    clear_dirty_line_queue();
 }
 
 void __time_critical_func(request_frame_invalidate)()
 {
     __atomic_fetch_add(&frame_invalidate_requests, 1u, __ATOMIC_RELEASE);
+    display.request_dirty();
 }
 
 void __time_critical_func(set_status_bits)(hercules_t *h, uint8_t bits)
@@ -499,11 +376,6 @@ uint8_t __time_critical_func(read_status)(const hercules_t *h)
     return read_pcem_status(h);
 }
 
-void clear_scanline_queue()
-{
-    scanline_tail = scanline_head;
-}
-
 void handle_frame_invalidation()
 {
     uint32_t requests = __atomic_load_n(&frame_invalidate_requests, __ATOMIC_ACQUIRE);
@@ -511,10 +383,10 @@ void handle_frame_invalidation()
         return;
     }
 
-    invalidate_frame_lines();
-    display_initialized = false;
-    display_frame_valid = false;
-    clear_scanline_queue();
+    display.invalidate_line_hashes();
+    display.mark_pages_clear_pending();
+    display.initialized = false;
+    display.frame_valid = false;
     handled_frame_invalidate_requests = requests;
 }
 
@@ -561,285 +433,59 @@ uint8_t pcem_fontdatm(uint8_t chr, int sc)
     return flat[offset];
 }
 
-uint8_t encode_frame_color(GCCOLOR color)
-{
-    if (color == cgapal[0]) {
-        return 0;
-    }
-    if (color == (cgapal[0x7] ^ cgapal[0xf])) {
-        return 3;
-    }
-    if (color == cgapal[0xf]) {
-        return 2;
-    }
-    return 1;
-}
-
-GCCOLOR decode_frame_color(uint8_t code)
-{
-    if (code == 2) {
-        return cgapal[0xf];
-    }
-    if (code == 3) {
-        return cgapal[0x7] ^ cgapal[0xf];
-    }
-    if (code == 1) {
-        return cgapal[0x7];
-    }
-    return cgapal[0];
-}
-
-void set_frame_pixel(unsigned line, unsigned x, uint8_t code)
-{
-    uint8_t &packed = frame_buffer[line][x / kPackedPixelsPerByte];
-    unsigned shift = (x % kPackedPixelsPerByte) * kBitsPerPackedPixel;
-    packed = (uint8_t)((packed & ~(0x3u << shift)) | ((code & 0x3u) << shift));
-}
-
-GCCOLOR get_frame_pixel(unsigned line, unsigned x)
-{
-    uint8_t packed = frame_buffer[line][x / kPackedPixelsPerByte];
-    unsigned shift = (x % kPackedPixelsPerByte) * kBitsPerPackedPixel;
-    return decode_frame_color((packed >> shift) & 0x3u);
-}
-
-void begin_access(RenderContext *ctx)
-{
-    if (!ctx || ctx->access_open || !ctx->pGC) {
-        return;
-    }
-    GCPBeginAccess(ctx->pGC);
-    ctx->access_open = true;
-}
-
-void fill_display(RenderContext *ctx, long x, long y, long width, long height, GCCOLOR color)
-{
-    if (!ctx || !ctx->pGC || width <= 0 || height <= 0) {
-        return;
-    }
-    long gc_width = GCWidth(ctx->pGC);
-    long gc_height = GCHeight(ctx->pGC);
-    if (gc_width <= 0 || gc_height <= 0) {
-        return;
-    }
-    if (x < 0) {
-        width += x;
-        x = 0;
-    }
-    if (y < 0) {
-        height += y;
-        y = 0;
-    }
-    if (x >= gc_width || y >= gc_height) {
-        return;
-    }
-    if (x + width > gc_width) {
-        width = gc_width - x;
-    }
-    if (y + height > gc_height) {
-        height = gc_height - y;
-    }
-    if (width <= 0 || height <= 0) {
-        return;
-    }
-    begin_access(ctx);
-    GCFastFill(ctx->pGC, x, y, width, height, color);
-    ctx->emitted = true;
-}
-
-bool layout_changed(PGC pGC, unsigned source_width, unsigned source_height)
-{
-    return !display_initialized ||
-           GCWidth(pGC) != last_gc_width ||
-           GCHeight(pGC) != last_gc_height ||
-           source_width != last_source_width ||
-           source_height != last_source_height;
-}
-
-void update_layout(RenderContext *ctx, unsigned source_width, unsigned source_height)
-{
-    PGC pGC = ctx->pGC;
-    long gc_width = GCWidth(pGC);
-    long gc_height = GCHeight(pGC);
-
-    dest_width = source_width;
-    dest_height = source_height;
-    origin_x = 0;
-    origin_y = 0;
-
-    last_gc_width = gc_width;
-    last_gc_height = gc_height;
-    last_source_width = source_width;
-    last_source_height = source_height;
-    display_initialized = true;
-
-    fill_display(ctx, 0, 0, gc_width, gc_height, cgapal[0]);
-    mark_nonblank_frame_lines_dirty();
-}
-
-void updatewindowsize(RenderContext *ctx, int width, int height)
-{
-    if (!ctx || !ctx->pGC || width <= 0 || height <= 0 ||
-        GCWidth(ctx->pGC) <= 0 || GCHeight(ctx->pGC) <= 0) {
-        return;
-    }
-
-    unsigned source_width = std::min<unsigned>((unsigned)width, kMaxPcemWidth);
-    unsigned source_height = std::min<unsigned>((unsigned)height, kMaxPcemLines);
-    if (layout_changed(ctx->pGC, source_width, source_height)) {
-        update_layout(ctx, source_width, source_height);
-    }
-}
-
 void video_wait_for_buffer()
 {
 }
 
-void enqueue_scanline_snapshot(hercules_t *h, int scanline)
+bool capture_scanline_snapshot(hercules_t *h, int scanline, ScanlineSnapshot *line)
 {
     unsigned columns = h->crtc[1];
     uint16_t ma = h->ma;
     h->ma = (uint16_t)(h->ma + columns);
 
-    if (columns == 0 || h->displine < 0 || h->displine >= (int)kMaxPcemLines) {
-        return;
+    if (!line || columns == 0 || h->displine < 0 || h->displine >= (int)kMaxPcemLines) {
+        return false;
     }
 
-    uint32_t head = scanline_head;
-    if (head - scanline_tail >= kScanlineQueueSize) {
-        ++scanline_dropped;
-        return;
-    }
-
-    ScanlineSnapshot &line = scanline_queue[head & kScanlineQueueMask];
-    line.ma = ma;
-    line.ca = (h->crtc[15] | (h->crtc[14] << 8)) & kCrtcAddressMask;
-    line.displine = (uint16_t)h->displine;
-    line.sc = (uint8_t)scanline;
-    line.columns = (uint8_t)columns;
-    line.ctrl = h->ctrl;
-    line.ctrl2 = h->ctrl2;
-    line.blink = (uint8_t)h->blink;
-    line.con = (uint8_t)h->con;
-    line.cursoron = (uint8_t)h->cursoron;
-    line.graphics = graphics_mode(h);
-    scanline_head = head + 1u;
+    line->ma = ma;
+    line->ca = (h->crtc[15] | (h->crtc[14] << 8)) & kCrtcAddressMask;
+    line->displine = (uint16_t)h->displine;
+    line->sc = (uint8_t)scanline;
+    line->columns = (uint8_t)columns;
+    line->ctrl = h->ctrl;
+    line->ctrl2 = h->ctrl2;
+    line->blink = (uint8_t)h->blink;
+    line->con = (uint8_t)h->con;
+    line->cursoron = (uint8_t)h->cursoron;
+    line->graphics = graphics_mode(h);
+    return true;
 }
 
-void handle_scanline_drops()
+void draw_rendered_scanline(RenderContext *ctx, const ScanlineSnapshot &line, unsigned width)
 {
-    if (handled_scanline_dropped == scanline_dropped) {
-        return;
-    }
-
-    clear_scanline_queue();
-    handled_scanline_dropped = scanline_dropped;
-}
-
-void store_line_if_changed(unsigned line, unsigned width)
-{
-    if (line >= kMaxPcemLines || width == 0) {
+    if (!ctx || !ctx->pGC || !display.frame_valid ||
+        width == 0 || line.displine >= kMaxPcemLines ||
+        line.displine < (unsigned)display.first_line ||
+        display.source_width == 0 || display.source_height == 0) {
         return;
     }
 
     width = std::min<unsigned>(width, kMaxPcemWidth);
-    size_t bytes = width * sizeof(GCCOLOR);
-    uint32_t hash = fnv1a(reinterpret_cast<const uint8_t *>(line_buffer), bytes);
-
-    if (line_hash[line] == hash && line_width[line] == width) {
+    unsigned source_line = line.displine - (unsigned)display.first_line;
+    if (source_line >= display.source_height) {
         return;
     }
 
-    unsigned old_width = line_width[line];
-    unsigned compare_width = std::max<unsigned>(width, old_width);
-    unsigned dirty_min = kMaxPcemWidth;
-    unsigned dirty_max = 0;
-
-    for (unsigned x = 0; x < compare_width; ++x) {
-        uint8_t new_code = 0;
-        if (x < width) {
-            new_code = encode_frame_color(line_buffer[x]);
-        }
-        uint8_t old_code = 0;
-        if (x < old_width) {
-            old_code = get_frame_code(line, x);
-        }
-        if (new_code != old_code) {
-            dirty_min = std::min<unsigned>(dirty_min, x);
-            dirty_max = x + 1u;
-        }
-    }
-
-    std::memset(frame_buffer[line], 0, kFrameLineBytes);
-    for (unsigned x = 0; x < width; ++x) {
-        set_frame_pixel(line, x, encode_frame_color(line_buffer[x]));
-    }
-    line_hash[line] = hash;
-    line_width[line] = (uint16_t)width;
-    if (dirty_min < dirty_max) {
-        mark_frame_line_dirty_range(line, dirty_min, dirty_max);
-    }
+    display.ensure_draw_page_ready_for_partial(ctx);
+    display.draw_line(ctx,
+                      line.displine,
+                      source_line,
+                      1,
+                      width,
+                      display.line_dirty_version(line.displine));
 }
 
-void draw_frame_line(RenderContext *ctx, unsigned buffer_line, unsigned screen_line,
-                     unsigned source_width, unsigned source_height,
-                     unsigned dirty_min, unsigned dirty_max)
-{
-    if (buffer_line >= kMaxPcemLines ||
-        source_width == 0 || source_height == 0 ||
-        dest_width <= 0 || dest_height <= 0 ||
-        dirty_min >= dirty_max) {
-        return;
-    }
-
-    unsigned effective_width = std::min<unsigned>(source_width, kMaxPcemWidth);
-    if (effective_width == 0 || screen_line >= source_height) {
-        return;
-    }
-
-    long dy = origin_y + (long)screen_line;
-    if (dy < 0 || dy >= GCHeight(ctx->pGC)) {
-        return;
-    }
-
-    long draw_width = std::min<long>((long)effective_width, GCWidth(ctx->pGC) - origin_x);
-    if (draw_width <= 0) {
-        return;
-    }
-
-    long draw_start = std::min<long>((long)dirty_min, draw_width);
-    long draw_end = std::min<long>((long)dirty_max, draw_width);
-    if (draw_start >= draw_end) {
-        return;
-    }
-
-    auto pixel_color = [buffer_line](long x) -> GCCOLOR {
-        if (x >= 0 && (unsigned)x < line_width[buffer_line]) {
-            return get_frame_pixel(buffer_line, (unsigned)x);
-        }
-        return cgapal[0];
-    };
-
-    long run_start = draw_start;
-    GCCOLOR run_color = pixel_color(draw_start);
-
-    for (long dx = draw_start + 1; dx <= draw_end; ++dx) {
-        GCCOLOR color = cgapal[0];
-        if (dx < draw_end) {
-            color = pixel_color(dx);
-        }
-
-        if (dx < draw_end && color == run_color) {
-            continue;
-        }
-
-        fill_display(ctx, origin_x + run_start, dy, dx - run_start, 1, run_color);
-        run_start = dx;
-        run_color = color;
-    }
-}
-
-void render_graphics_scanline(const ScanlineSnapshot &line)
+void render_graphics_scanline(RenderContext *ctx, const ScanlineSnapshot &line)
 {
     unsigned columns = line.columns;
     unsigned visible_columns = std::min<unsigned>(columns, kMaxPcemWidth / 16u);
@@ -869,10 +515,10 @@ void render_graphics_scanline(const ScanlineSnapshot &line)
         }
     }
 
-    store_line_if_changed(line.displine, width);
+    draw_rendered_scanline(ctx, line, width);
 }
 
-void render_text_scanline(const ScanlineSnapshot &line)
+void render_text_scanline(RenderContext *ctx, const ScanlineSnapshot &line)
 {
     unsigned columns = line.columns;
     unsigned visible_columns = std::min<unsigned>(columns, kMaxPcemWidth / 9u);
@@ -916,75 +562,26 @@ void render_text_scanline(const ScanlineSnapshot &line)
         }
     }
 
-    store_line_if_changed(line.displine, width);
+    draw_rendered_scanline(ctx, line, width);
 }
 
-void render_pending_lines(unsigned max_lines)
+void render_current_scanline(RenderContext *ctx, hercules_t *h, int scanline)
 {
-    unsigned rendered = 0;
-    while (scanline_tail != scanline_head && rendered < max_lines) {
-        const ScanlineSnapshot line = scanline_queue[scanline_tail & kScanlineQueueMask];
-        scanline_tail++;
-
-        if (line.graphics) {
-            render_graphics_scanline(line);
-        } else {
-            render_text_scanline(line);
-        }
-        rendered++;
-    }
-}
-
-void blit_dirty_visible_lines(RenderContext *ctx, unsigned max_lines)
-{
-    if (!ctx || !ctx->pGC || !display_frame_valid ||
-        display_source_width == 0 || display_source_height == 0 ||
-        GCWidth(ctx->pGC) <= 0 || GCHeight(ctx->pGC) <= 0) {
+    ScanlineSnapshot line;
+    if (!capture_scanline_snapshot(h, scanline, &line) ||
+        display.should_skip_line(line.displine) ||
+        !ctx || !ctx->pGC) {
         return;
     }
 
-    updatewindowsize(ctx, display_source_width, display_source_height);
-
-    unsigned drawn = 0;
-    while (drawn < max_lines && dirty_line_tail != dirty_line_head) {
-        unsigned buffer_line = dirty_line_queue[dirty_line_tail & kDirtyLineQueueMask];
-        dirty_line_tail++;
-        if (buffer_line >= kMaxPcemLines || !line_dirty[buffer_line]) {
-            continue;
-        }
-
-        if (buffer_line < (unsigned)display_firstline) {
-            line_dirty[buffer_line] = 0;
-            line_dirty_min[buffer_line] = 0;
-            line_dirty_max[buffer_line] = 0;
-            continue;
-        }
-
-        unsigned screen_line = buffer_line - (unsigned)display_firstline;
-        if (screen_line >= display_source_height) {
-            line_dirty[buffer_line] = 0;
-            line_dirty_min[buffer_line] = 0;
-            line_dirty_max[buffer_line] = 0;
-            continue;
-        }
-
-        unsigned dirty_min = line_dirty_min[buffer_line];
-        unsigned dirty_max = line_dirty_max[buffer_line];
-        line_dirty[buffer_line] = 0;
-        line_dirty_min[buffer_line] = 0;
-        line_dirty_max[buffer_line] = 0;
-        draw_frame_line(ctx,
-                        buffer_line,
-                        screen_line,
-                        display_source_width,
-                        display_source_height,
-                        dirty_min,
-                        dirty_max);
-        drawn++;
+    if (line.graphics) {
+        render_graphics_scanline(ctx, line);
+    } else {
+        render_text_scanline(ctx, line);
     }
 }
 
-uint32_t hercules_poll(hercules_t *h)
+uint32_t hercules_poll(hercules_t *h, RenderContext *ctx)
 {
     int x;
     int oldvc;
@@ -1003,7 +600,7 @@ uint32_t hercules_poll(hercules_t *h)
                 video_wait_for_buffer();
             }
             h->lastline = h->displine;
-            enqueue_scanline_snapshot(h, h->sc);
+            render_current_scanline(ctx, h, h->sc);
         }
         h->sc = oldsc;
         if (h->vc == h->crtc[7] && !h->sc) {
@@ -1088,10 +685,16 @@ uint32_t hercules_poll(hercules_t *h)
                     }
                 }
 
-                display_firstline = h->firstline;
-                display_source_width = (unsigned)xsize;
-                display_source_height = (unsigned)ysize;
-                display_frame_valid = true;
+                if (!graphics_mode(h) && ((h->blink ^ (h->blink + 1)) & 16)) {
+                    display.request_dirty();
+                }
+                display.queue_frame(ctx);
+                display.publish_frame(h->firstline,
+                                      (unsigned)xsize,
+                                      (unsigned)ysize,
+                                      1,
+                                      PICOMEM_DISPLAYLINK_WIDTH,
+                                      PICOMEM_DISPLAYLINK_HEIGHT);
 
                 frames++;
                 if (graphics_mode(h)) {
@@ -1121,7 +724,7 @@ uint32_t hercules_poll(hercules_t *h)
     return hercules_delay_us(h, load_dispontime(h));
 }
 
-void hercules_advance_state()
+void hercules_advance_state(RenderContext *ctx)
 {
     hercules_t *h = &hercules;
     uint32_t now = time_us_32();
@@ -1132,7 +735,7 @@ void hercules_advance_state()
 
     unsigned steps = 0;
     while ((int32_t)(now - h->next_poll_us) >= 0 && steps < kMaxPollStepsPerTick) {
-        h->next_poll_us += hercules_poll(h);
+        h->next_poll_us += hercules_poll(h, ctx);
         ++steps;
     }
     if (steps == kMaxPollStepsPerTick && (int32_t)(now - h->next_poll_us) > 0) {
@@ -1171,6 +774,8 @@ void hercules_out(uint16_t addr, uint8_t val, void *p)
         }
         if (crtc_write_invalidates_frame(reg)) {
             request_frame_invalidate();
+        } else if (crtc_write_affects_pixels(reg)) {
+            display.request_dirty();
         }
         return;
     }
@@ -1258,6 +863,7 @@ void __time_critical_func(herc_mem_write)(uint32_t address, uint8_t data)
         return;
     }
     hercules_write(address, data, &hercules);
+    display.request_dirty();
 }
 
 void init()
@@ -1265,37 +871,17 @@ void init()
     std::memset(&hercules, 0, sizeof(hercules));
     std::memset(hercules.vram, 0, sizeof(hercules.vram));
     std::memset(line_buffer, 0, sizeof(line_buffer));
-    std::memset(frame_buffer, 0, sizeof(frame_buffer));
+    display.reset(kMaxPcemWidth, kMaxPcemLines, line_buffer, "hercules");
 
     loadfont_mda_from_rom();
     cgapal_rebuild(PICOMEM_HERCULES_DISPLAY_TYPE, 0);
     build_mdacols();
-    invalidate_frame_lines();
     handled_frame_invalidate_requests = 0;
     __atomic_store_n(&frame_invalidate_requests, 1u, __ATOMIC_RELEASE);
 
     hercules.firstline = 1000;
     hercules_recalctimings(&hercules);
 
-    display_initialized = false;
-    last_gc_width = 0;
-    last_gc_height = 0;
-    last_source_width = 0;
-    last_source_height = 0;
-    origin_x = 0;
-    origin_y = 0;
-    dest_width = 0;
-    dest_height = 0;
-    display_firstline = 0;
-    display_source_width = 0;
-    display_source_height = 0;
-    display_frame_valid = false;
-    scanline_head = 0;
-    scanline_tail = 0;
-    scanline_dropped = 0;
-    handled_scanline_dropped = 0;
-    dirty_line_head = 0;
-    dirty_line_tail = 0;
     xsize = 1;
     ysize = 1;
     video_res_x = 0;
@@ -1303,37 +889,27 @@ void init()
     video_bpp = 0;
     frames = 0;
 
-    printf("hercules: PCem I/O 0x%03x-0x%03x, VRAM 0x%05lx-0x%05lx, SRAM frame=%u bytes, font=/opt/pico/PCem-ROMs/mda.rom\r\n",
+    printf("hercules: PCem I/O 0x%03x-0x%03x, VRAM 0x%05lx-0x%05lx, font=/opt/pico/PCem-ROMs/mda.rom\r\n",
            kHercIoBase,
            kHercIoBase + kHercIoSize - 1,
            (unsigned long)kHercMemBase,
-           (unsigned long)(kHercMemBase + kHercVramSize - 1),
-           kFrameBufferBytes);
+           (unsigned long)(kHercMemBase + kHercVramSize - 1));
 }
 
 void tick()
 {
-    handle_frame_invalidation();
-    handle_scanline_drops();
-    hercules_advance_state();
-    handle_scanline_drops();
-    render_pending_lines(kMaxRenderLinesPerTick);
-
-    if (!display_frame_valid) {
-        return;
-    }
-
     PGC pGC = GCDisplay();
     RenderContext ctx = {pGC, false, false};
-    if (!pGC || !pGC->bitmap.handle || GCWidth(pGC) <= 0 || GCHeight(pGC) <= 0) {
-        return;
-    }
+    RenderContext *pCtx =
+        (pGC && pGC->bitmap.handle && GCWidth(pGC) > 0 && GCHeight(pGC) > 0) ? &ctx : nullptr;
 
-    blit_dirty_visible_lines(&ctx, kMaxDisplayLinesPerTick);
+    handle_frame_invalidation();
+    hercules_advance_state(pCtx);
 
     if (ctx.access_open) {
-        GCPEndAccess(pGC);
+        display.end_access(&ctx);
     }
+    display.present_pending(pGC);
 }
 
 IoTrap io_traps[] = {

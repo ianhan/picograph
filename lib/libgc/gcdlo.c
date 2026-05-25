@@ -306,21 +306,25 @@ GCBOOL DLO_HWSetupDevice(GCDEVICE *pDevice, GCBITMAP *pDisplaySurface, void *par
         return GCFALSE;
     }
 
-    desc.view.base = 0;
-    desc.view.width = PICOMEM_DISPLAYLINK_WIDTH;
-    desc.view.height = PICOMEM_DISPLAYLINK_HEIGHT;
-    desc.view.bpp = 24;
-    desc.refresh = PICOMEM_DISPLAYLINK_REFRESH;
-
     pMode = dlo_get_mode(uid);
+
     if (!pMode) {
         printf("gc: dlo_get_mode failed to get native mode\n");
         return GCFALSE;
     }
 
     if (pMode->view.width == 800 && pMode->view.height == 480) {
-        printf("gc: DisplayLink skipping mode set for LCD panel\n");
+        printf("gc: DisplayLink skipping mode set for LCD panel, centering view.\n");
+        long xOffset = (pMode->view.width - PICOMEM_DISPLAYLINK_WIDTH) / 2;
+        long yOffset = (pMode->view.height - PICOMEM_DISPLAYLINK_HEIGHT) / 2;
+        GCSetOffset(pDevice->pDisplay, xOffset, yOffset);
     } else {
+        desc.view.base = 0;
+        desc.view.width = PICOMEM_DISPLAYLINK_WIDTH;
+        desc.view.height = PICOMEM_DISPLAYLINK_HEIGHT;
+        desc.view.bpp = 24;
+        desc.refresh = PICOMEM_DISPLAYLINK_REFRESH;
+
         ret = dlo_set_mode(uid, &desc);
 
         if (!DLO_CheckRetcode("dlo_set_mode", ret)) {

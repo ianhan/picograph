@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.13)
 
 set(PICO_BOARD "pico2" CACHE STRING "Pico SDK board target")
 set(PICOMEM_BOARD "PICOMEM_M1" CACHE STRING "PicoMEM hardware profile: PICOMEM_M1, PICOMEM_M2, PICOMEM_LP, PICOMEM_15")
-set(PICOMEM_MODULE "EGA" CACHE STRING "Single module to build into this firmware")
+set(PICOMEM_MODULE "HERCULES" CACHE STRING "Single module to build into this firmware")
 set(PICOMEM_SYS_CLK_KHZ "280000" CACHE STRING "RP2040/RP2350 system clock in kHz")
 set(PICOMEM_ENABLE_USB_HOST ON CACHE BOOL "Enable TinyUSB host support")
 set(PICOMEM_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
@@ -105,14 +105,18 @@ if(PICOMEM_ENABLE_GC)
 endif()
 
 set(PICOMEM_MODULE_SOURCE "")
+set(PICOMEM_MODULE_SUPPORT_SOURCE "")
 if(PICOMEM_MODULE STREQUAL "REGISTER_VIEW")
     set(PICOMEM_MODULE_SOURCE src/modules/register_view.cpp)
 elseif(PICOMEM_MODULE STREQUAL "HERCULES")
     set(PICOMEM_MODULE_SOURCE src/modules/hercules_device.cpp)
+    list(APPEND PICOMEM_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
 elseif(PICOMEM_MODULE STREQUAL "EGA")
     set(PICOMEM_MODULE_SOURCE src/modules/ega_device.cpp)
+    list(APPEND PICOMEM_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
 elseif(PICOMEM_MODULE STREQUAL "MDA")
     set(PICOMEM_MODULE_SOURCE src/modules/mda_device.cpp)
+    list(APPEND PICOMEM_MODULE_SUPPORT_SOURCE src/modules/dlodirty.cpp)
 elseif(PICOMEM_MODULE STREQUAL "SAMPLE")
     set(PICOMEM_MODULE_SOURCE src/modules/sample_device.cpp)
 else()
@@ -124,6 +128,7 @@ add_executable(picomem
     src/framework/module_registry.cpp
     src/hw/picomem_bus.cpp
     ${PICOMEM_MODULE_SOURCE}
+    ${PICOMEM_MODULE_SUPPORT_SOURCE}
 )
 
 target_include_directories(picomem PRIVATE

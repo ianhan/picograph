@@ -7,11 +7,8 @@
 #include "pico/platform/sections.h"
 #include "pico/stdlib.h"
 
+#include "modules/dlodirty.h"
 #include "mda_font_rom.h"
-
-extern "C" {
-#include "gc.h"
-}
 
 namespace picomem {
 namespace {
@@ -55,6 +52,7 @@ long cell_height = 14;
 uint8_t last_blink_phase = 0xff;
 uint32_t handled_full_redraw_request;
 uint32_t handled_attr_high_dirty_request;
+DloDirtyDisplay display;
 
 const GCCOLOR kTextPalette[16] = {
     RGB(0x00, 0x00, 0x00),
@@ -441,8 +439,9 @@ void update_layout(GC *pGC)
     display_initialized = true;
 }
 
-void draw_cell(GC *pGC, unsigned cell, uint8_t phase)
+void draw_cell(DloDirtyDisplay::RenderContext *ctx, unsigned cell, uint8_t phase)
 {
+    GC *pGC = ctx->pGC;
     uint16_t start = crtc_start_address();
     uint16_t cell_address = (start + cell) & kCrtcAddressMask;
     uint16_t word = __atomic_load_n(&mda_cells[cell_address], __ATOMIC_ACQUIRE);
@@ -459,7 +458,7 @@ void draw_cell(GC *pGC, unsigned cell, uint8_t phase)
     GCCOLOR bg_color = kTextPalette[bg];
     unsigned current_character_height = character_height();
 
-    GCFastFill(pGC, cell_x, cell_y, cell_width, cell_height, bg_color);
+    display.fill(ctx, cell_x, cell_y, cell_width, cell_height, bg_color);
     if (fg_color == bg_color) {
         return;
     }
@@ -481,7 +480,7 @@ void draw_cell(GC *pGC, unsigned cell, uint8_t phase)
             if (draw && run_start < 0) {
                 run_start = dx;
             } else if (!draw && run_start >= 0) {
-                GCFastFill(pGC, cell_x + run_start, cell_y + dy, dx - run_start, 1, fg_color);
+                display.fill(ctx, cell_x + run_start, cell_y + dy, dx - run_start, 1, fg_color);
                 run_start = -1;
             }
         }
@@ -495,6 +494,7 @@ void render_mda()
         return;
     }
 
+    DloDirtyDisplay::RenderContext ctx = {pGC, false, false};
     uint32_t redraw_requests = __atomic_load_n(&full_redraw_requests, __ATOMIC_ACQUIRE);
     uint32_t attr_dirty_requests = __atomic_load_n(&attr_high_dirty_requests, __ATOMIC_ACQUIRE);
     bool full_redraw = redraw_requests != handled_full_redraw_request;
@@ -531,29 +531,32 @@ void render_mda()
         mark_attr_high_cells_dirty();
     }
 
-    bool access_open = false;
-    auto begin_access = [&]() {
-        if (!access_open) {
-            GCPBeginAccess(pGC);
-            access_open = true;
-        }
-    };
+    display.frame_valid = true;
+    display.source_width = (unsigned)GCWidth(pGC);
+    display.source_height = (unsigned)GCHeight(pGC);
+    display.vertical_scale = 1;
+    display.first_line = 0;
+    display.window_checked_for_frame = true;
+    display.render_full_frame = full_redraw || clear_screen || !display.initialized || !display.pages_ready;
+    display.render_full_frame_from_start = display.render_full_frame;
+    display.render_frame = true;
+    display.update_window(&ctx, display.source_width, display.source_height, RGB(0, 0, 0));
+    if (!display.render_full_frame) {
+        display.ensure_draw_page_ready_for_partial(&ctx);
+    }
 
     if (clear_screen) {
-        begin_access();
-        GCFastFill(pGC, 0, 0, GCWidth(pGC), GCHeight(pGC), RGB(0, 0, 0));
+        display.fill(&ctx, 0, 0, GCWidth(pGC), GCHeight(pGC), RGB(0, 0, 0));
         screen_dark = true;
     }
 
     if ((mda_control_reg & 0x08u) == 0) {
         if (!screen_dark) {
-            begin_access();
-            GCFastFill(pGC, 0, 0, GCWidth(pGC), GCHeight(pGC), RGB(0, 0, 0));
+            display.fill(&ctx, 0, 0, GCWidth(pGC), GCHeight(pGC), RGB(0, 0, 0));
             screen_dark = true;
         }
-        if (access_open) {
-            GCPEndAccess(pGC);
-        }
+        display.queue_frame(&ctx);
+        display.present_pending(pGC);
         return;
     }
 
@@ -562,12 +565,10 @@ void render_mda()
         if (!__atomic_exchange_n(&dirty_cells[i], 0u, __ATOMIC_ACQ_REL)) {
             continue;
         }
-        begin_access();
-        draw_cell(pGC, i, phase);
+        draw_cell(&ctx, i, phase);
     }
-    if (access_open) {
-        GCPEndAccess(pGC);
-    }
+    display.queue_frame(&ctx);
+    display.present_pending(pGC);
 }
 
 void init()
@@ -581,6 +582,7 @@ void init()
     }
     mark_all_cells_dirty();
     request_full_redraw();
+    display.reset(kNativeCellWidth * kColumns, kFontSlotHeight * kRows, nullptr, "mda");
 
     printf("mda: active traps %05lx-%05lx and I/O %03x-%03x -> DisplayLink\n",
            (unsigned long)kMdaMemBase,
