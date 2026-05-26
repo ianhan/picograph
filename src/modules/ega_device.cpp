@@ -50,6 +50,15 @@ constexpr unsigned kMaxPollStepsPerTick = 2048;
 constexpr int kDirtyUnmapped = -1;
 constexpr int kDirtyNoVisibleChange = 0;
 constexpr int kDirtyMapped = 1;
+constexpr unsigned kKeenEgaPageStrideLines = 240;
+constexpr unsigned kMaxDeferredDirtyPages = 8;
+constexpr unsigned kMaxScrollExposeRegions = 3;
+constexpr unsigned kDeferredPageSearchDistance = 1;
+constexpr int kMaxPreservedScrollPixels = 64;
+constexpr int kMaxPreservedScrollLines = 24;
+constexpr int kDeferredDirtyLineBias = kMaxPreservedScrollLines * 4;
+constexpr unsigned kDeferredDirtyLines = kMaxEgaLines + (unsigned)kDeferredDirtyLineBias * 2u;
+constexpr unsigned kDeferredDirtyWords = (kDeferredDirtyLines + 31u) / 32u;
 
 constexpr int kDisplayGreen = 3;
 constexpr int kDisplayAmber = 4;
@@ -61,6 +70,13 @@ constexpr int kDefaultMonitorType = PICOGRAPH_EGA_MONITOR_TYPE;
 #endif
 
 constexpr int kMonochromeDisplayColor = PICOGRAPH_MONOCHROME_DISPLAY_COLOR;
+
+struct ScrollExposeRegion {
+    unsigned x;
+    unsigned y;
+    unsigned width;
+    unsigned height;
+};
 
 struct Ega {
     uint8_t crtcreg;
@@ -106,6 +122,17 @@ struct Ega {
     int linepos, vslines;
     int con, cursoron, blink;
     int scrollcache;
+    uint16_t latched_display_start;
+    uint8_t latched_pelpan;
+    bool latched_origin_valid;
+    unsigned scroll_expose_count;
+    ScrollExposeRegion scroll_exposes[kMaxScrollExposeRegions];
+    bool deferred_scroll_publish_origin_valid;
+    uint32_t deferred_scroll_publish_origin;
+    int deferred_scroll_line_adjust;
+    bool deferred_scroll_origin_valid[kMaxDeferredDirtyPages];
+    uint32_t deferred_scroll_origin[kMaxDeferredDirtyPages];
+    uint32_t deferred_scroll_dirty[kMaxDeferredDirtyPages][kDeferredDirtyWords];
 
     int firstline, lastline;
     int displine;
@@ -347,6 +374,295 @@ unsigned current_line_width(const Ega *e)
     return std::min<unsigned>((unsigned)e->hdisp * 8u, kMaxEgaWidth);
 }
 
+uint16_t current_display_start(const Ega *e)
+{
+    return (uint16_t)((((uint16_t)e->crtc[0x0c] << 8) | e->crtc[0x0d]) & 0xffffu);
+}
+
+uint16_t visible_graphics_display_start(const Ega *e)
+{
+    return e->latched_origin_valid ? e->latched_display_start : current_display_start(e);
+}
+
+uint32_t vram_wrapped_base(const Ega *e, uint32_t base)
+{
+    return e->vram_limit ? (base & e->vrammask) : base;
+}
+
+unsigned graphics_pixels_per_crtc_unit(const Ega *e)
+{
+    return ((e->gdcreg[5] & 0x20) || (e->seqregs[1] & 8)) ? 16u : 8u;
+}
+
+unsigned graphics_pixels_per_pelpan_unit(const Ega *e)
+{
+    return ((e->gdcreg[5] & 0x20) || (e->seqregs[1] & 8)) ? 2u : 1u;
+}
+
+uint8_t effective_pelpan(uint8_t value)
+{
+    return value & 7u;
+}
+
+int32_t normalize_wrapped_delta(int32_t delta, int32_t period)
+{
+    if (period <= 0) {
+        return delta;
+    }
+    while (delta > period / 2) {
+        delta -= period;
+    }
+    while (delta < -period / 2) {
+        delta += period;
+    }
+    return delta;
+}
+
+int32_t floor_divide(int32_t value, int32_t divisor)
+{
+    if (divisor <= 0 || value >= 0) {
+        return divisor ? value / divisor : 0;
+    }
+    return -(((-value) + divisor - 1) / divisor);
+}
+
+void clear_scroll_exposes(Ega *e)
+{
+    e->scroll_expose_count = 0;
+}
+
+void clear_deferred_scroll_publish(Ega *e)
+{
+    e->deferred_scroll_publish_origin_valid = false;
+    e->deferred_scroll_publish_origin = 0;
+    e->deferred_scroll_line_adjust = 0;
+}
+
+void add_scroll_expose(Ega *e, unsigned x, unsigned y, unsigned width, unsigned height)
+{
+    if (width == 0 || height == 0 || e->scroll_expose_count >= kMaxScrollExposeRegions) {
+        return;
+    }
+    e->scroll_exposes[e->scroll_expose_count++] = {x, y, width, height};
+}
+
+bool scroll_exposes_line(const Ega *e, unsigned visible_line)
+{
+    for (unsigned i = 0; i < e->scroll_expose_count; ++i) {
+        const ScrollExposeRegion &region = e->scroll_exposes[i];
+        if (visible_line >= region.y && visible_line < region.y + region.height) {
+            return true;
+        }
+    }
+    return false;
+}
+
+unsigned find_deferred_scroll_slot(const Ega *e, uint32_t origin)
+{
+    for (unsigned slot = 0; slot < kMaxDeferredDirtyPages; ++slot) {
+        if (e->deferred_scroll_origin_valid[slot] &&
+            e->deferred_scroll_origin[slot] == origin) {
+            return slot;
+        }
+    }
+    return kMaxDeferredDirtyPages;
+}
+
+unsigned allocate_deferred_scroll_slot(Ega *e, uint32_t origin)
+{
+    unsigned slot = find_deferred_scroll_slot(e, origin);
+    if (slot < kMaxDeferredDirtyPages) {
+        return slot;
+    }
+    for (slot = 0; slot < kMaxDeferredDirtyPages; ++slot) {
+        if (!e->deferred_scroll_origin_valid[slot]) {
+            e->deferred_scroll_origin_valid[slot] = true;
+            e->deferred_scroll_origin[slot] = origin;
+            std::memset(e->deferred_scroll_dirty[slot], 0, sizeof(e->deferred_scroll_dirty[slot]));
+            return slot;
+        }
+    }
+    return kMaxDeferredDirtyPages;
+}
+
+uint32_t wrapped_delta(uint32_t base, uint32_t origin, uint32_t limit)
+{
+    if (limit == 0) {
+        return base - origin;
+    }
+    base %= limit;
+    origin %= limit;
+    return (base >= origin) ? (base - origin) : (limit - origin + base);
+}
+
+int32_t signed_wrapped_delta(uint32_t base, uint32_t origin, uint32_t limit)
+{
+    if (limit == 0) {
+        return (int32_t)(base - origin);
+    }
+    uint32_t forward = wrapped_delta(base, origin, limit);
+    if (forward > limit / 2u) {
+        return (int32_t)forward - (int32_t)limit;
+    }
+    return (int32_t)forward;
+}
+
+uint32_t wrap_forward(uint32_t value, uint32_t step, uint32_t limit)
+{
+    value += step;
+    return (value >= limit) ? (value - limit) : value;
+}
+
+uint32_t wrap_backward(uint32_t value, uint32_t step, uint32_t limit)
+{
+    return (value >= step) ? (value - step) : (limit - (step - value));
+}
+
+uint32_t wrap_add_signed(uint32_t value, int32_t delta, uint32_t limit)
+{
+    if (limit == 0) {
+        return value + (uint32_t)delta;
+    }
+    int64_t wrapped = (int64_t)(value % limit) + (int64_t)delta;
+    wrapped %= (int64_t)limit;
+    if (wrapped < 0) {
+        wrapped += limit;
+    }
+    return (uint32_t)wrapped;
+}
+
+void mark_deferred_scroll_line_dirty(Ega *e, unsigned slot, int line)
+{
+    int stored_line = line + kDeferredDirtyLineBias;
+    if (slot >= kMaxDeferredDirtyPages || stored_line < 0 ||
+        stored_line >= (int)kDeferredDirtyLines) {
+        return;
+    }
+    e->deferred_scroll_dirty[slot][(unsigned)stored_line / 32u] |=
+        1u << ((unsigned)stored_line & 31u);
+}
+
+bool mark_deferred_scroll_line_range_dirty(Ega *e, uint32_t origin, int first, int end)
+{
+    if (first >= end) {
+        return true;
+    }
+    unsigned slot = allocate_deferred_scroll_slot(e, origin);
+    if (slot >= kMaxDeferredDirtyPages) {
+        return false;
+    }
+    first = std::max(first, -kDeferredDirtyLineBias);
+    end = std::min(end, (int)kMaxEgaLines + kDeferredDirtyLineBias);
+    for (int line = first; line < end; ++line) {
+        mark_deferred_scroll_line_dirty(e, slot, line);
+    }
+    return true;
+}
+
+void clear_deferred_scroll_dirty(Ega *e, unsigned slot)
+{
+    if (slot >= kMaxDeferredDirtyPages) {
+        return;
+    }
+    std::memset(e->deferred_scroll_dirty[slot], 0, sizeof(e->deferred_scroll_dirty[slot]));
+    e->deferred_scroll_origin_valid[slot] = false;
+    e->deferred_scroll_origin[slot] = 0;
+}
+
+void clear_deferred_scroll_origin_dirty(Ega *e, uint32_t origin)
+{
+    clear_deferred_scroll_dirty(e, find_deferred_scroll_slot(e, origin));
+}
+
+void clear_deferred_scroll_dirty(Ega *e)
+{
+    std::memset(e->deferred_scroll_dirty, 0, sizeof(e->deferred_scroll_dirty));
+    std::memset(e->deferred_scroll_origin_valid, 0, sizeof(e->deferred_scroll_origin_valid));
+    std::memset(e->deferred_scroll_origin, 0, sizeof(e->deferred_scroll_origin));
+    clear_deferred_scroll_publish(e);
+}
+
+bool has_deferred_scroll_dirty(const Ega *e, uint32_t origin)
+{
+    unsigned slot = find_deferred_scroll_slot(e, origin);
+    if (slot >= kMaxDeferredDirtyPages) {
+        return false;
+    }
+    for (uint32_t word : e->deferred_scroll_dirty[slot]) {
+        if (word != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool publish_deferred_scroll_dirty(Ega *e, uint32_t origin, int line_adjust)
+{
+    unsigned slot = find_deferred_scroll_slot(e, origin);
+    if (slot >= kMaxDeferredDirtyPages) {
+        clear_deferred_scroll_publish(e);
+        return false;
+    }
+
+    unsigned line = 0;
+    while (line < kDeferredDirtyLines) {
+        while (line < kDeferredDirtyLines &&
+               !(e->deferred_scroll_dirty[slot][line / 32u] & (1u << (line & 31u)))) {
+            ++line;
+        }
+        unsigned first = line;
+        while (line < kDeferredDirtyLines &&
+               (e->deferred_scroll_dirty[slot][line / 32u] & (1u << (line & 31u)))) {
+            ++line;
+        }
+        if (first < line) {
+            int adjusted_first = (int)first - kDeferredDirtyLineBias + line_adjust;
+            int adjusted_end = (int)line - kDeferredDirtyLineBias + line_adjust;
+            if (adjusted_end > 0 && adjusted_first < (int)kMaxEgaLines) {
+                unsigned clipped_first = (unsigned)std::max(adjusted_first, 0);
+                unsigned clipped_end = (unsigned)std::min(adjusted_end, (int)kMaxEgaLines);
+                mark_display_line_range_dirty(clipped_first, clipped_end);
+            }
+        }
+    }
+    clear_deferred_scroll_dirty(e, slot);
+    clear_deferred_scroll_publish(e);
+    return true;
+}
+
+bool publish_visible_origin_deferred_dirty(Ega *e, uint32_t origin)
+{
+    if (!has_deferred_scroll_dirty(e, origin)) {
+        return false;
+    }
+    return publish_deferred_scroll_dirty(e, origin, 0);
+}
+
+void prune_deferred_scroll_dirty_for_visible_origin(Ega *e, uint32_t visible_origin)
+{
+    uint32_t row_bytes = (uint32_t)e->rowoffset << 3;
+    uint32_t page_stride_bytes = row_bytes * kKeenEgaPageStrideLines;
+    if (row_bytes == 0 || page_stride_bytes == 0 ||
+        page_stride_bytes >= e->vram_limit) {
+        clear_deferred_scroll_dirty(e);
+        return;
+    }
+
+    visible_origin = vram_wrapped_base(e, visible_origin);
+    uint32_t plus_origin = wrap_forward(visible_origin, page_stride_bytes, e->vram_limit);
+    uint32_t minus_origin = wrap_backward(visible_origin, page_stride_bytes, e->vram_limit);
+
+    for (unsigned slot = 0; slot < kMaxDeferredDirtyPages; ++slot) {
+        if (!e->deferred_scroll_origin_valid[slot]) {
+            continue;
+        }
+        uint32_t origin = e->deferred_scroll_origin[slot];
+        if (origin != plus_origin && origin != minus_origin) {
+            clear_deferred_scroll_dirty(e, slot);
+        }
+    }
+}
+
 void put_pixel(unsigned x, GCCOLOR color)
 {
     if (x < kMaxEgaWidth) {
@@ -359,6 +675,25 @@ void put_visible_pixel(int x, unsigned width, GCCOLOR color)
     if (x >= 0 && (unsigned)x < width && (unsigned)x < kMaxEgaWidth) {
         line_buffer[x] = color;
     }
+}
+
+void put_region_pixel(int x, unsigned width, unsigned region_x, unsigned region_end, GCCOLOR color)
+{
+    if (x >= 0 && (unsigned)x < width && (unsigned)x >= region_x &&
+        (unsigned)x < region_end && (unsigned)x < kMaxEgaWidth) {
+        line_buffer[x] = color;
+    }
+}
+
+bool pixel_group_intersects(int base, int pixels, unsigned region_x, unsigned region_end)
+{
+    return base < (int)region_end && base + pixels > (int)region_x;
+}
+
+uint32_t graphics_line_advance(const Ega *e)
+{
+    uint32_t step = (e->seqregs[1] & 4) ? 2u : 4u;
+    return ((uint32_t)e->hdisp + 1u) * step;
 }
 
 void ega_draw_text(Ega *e)
@@ -518,6 +853,43 @@ void ega_draw_2bpp(Ega *e, unsigned width)
     }
 }
 
+void ega_draw_2bpp_region(Ega *e, unsigned width, unsigned region_x, unsigned region_width)
+{
+    if (region_x >= width || region_width == 0) {
+        e->ma = (e->ma + graphics_line_advance(e)) & e->vrammask;
+        return;
+    }
+
+    unsigned region_end = std::min<unsigned>(width, region_x + region_width);
+    std::fill(line_buffer + region_x, line_buffer + region_end, e->active_palette[0]);
+
+    int hscroll = (e->scrollcache & 7) << 1;
+    uint32_t step = (e->seqregs[1] & 4) ? 2u : 4u;
+    const GCCOLOR *palette = e->active_palette;
+    unsigned groups = (unsigned)e->hdisp + 1u;
+    for (unsigned x = 0; x < groups; ++x) {
+        int base = (int)x * 16 - hscroll;
+        if (!pixel_group_intersects(base, 16, region_x, region_end)) {
+            e->ma = (e->ma + step) & e->vrammask;
+            continue;
+        }
+
+        int oddeven;
+        uint32_t addr = ega_fetch_addr(e, &oddeven);
+        uint8_t ed0 = vram_load(addr);
+        uint8_t ed1 = vram_load(addr | 1u);
+        e->ma = (e->ma + step) & e->vrammask;
+        for (int pair = 0; pair < 8; ++pair) {
+            uint8_t src = (pair < 4) ? ed0 : ed1;
+            uint8_t pix = (src >> ((3 - (pair & 3)) * 2)) & 3;
+            GCCOLOR color = palette[pix];
+            int dst = base + pair * 2;
+            put_region_pixel(dst, width, region_x, region_end, color);
+            put_region_pixel(dst + 1, width, region_x, region_end, color);
+        }
+    }
+}
+
 void ega_draw_4bpp(Ega *e, unsigned width)
 {
     bool lowres = (e->seqregs[1] & 8) != 0;
@@ -629,6 +1001,66 @@ void ega_draw_4bpp(Ega *e, unsigned width)
     }
 }
 
+void ega_draw_4bpp_region(Ega *e, unsigned width, unsigned region_x, unsigned region_width)
+{
+    if (region_x >= width || region_width == 0) {
+        e->ma = (e->ma + graphics_line_advance(e)) & e->vrammask;
+        return;
+    }
+
+    unsigned region_end = std::min<unsigned>(width, region_x + region_width);
+    std::fill(line_buffer + region_x, line_buffer + region_end, e->active_palette[0]);
+
+    bool lowres = (e->seqregs[1] & 8) != 0;
+    int pixels_per_group = lowres ? 16 : 8;
+    int hscroll = (e->scrollcache & 7) * (lowres ? 2 : 1);
+    uint32_t step = (e->seqregs[1] & 4) ? 2u : 4u;
+    const GCCOLOR *palette = e->active_palette;
+    uint8_t attr_mask = e->attrregs[0x12];
+    unsigned groups = (unsigned)e->hdisp + 1u;
+    for (unsigned x = 0; x < groups; ++x) {
+        int group_base = (int)x * pixels_per_group - hscroll;
+        if (!pixel_group_intersects(group_base, pixels_per_group, region_x, region_end)) {
+            e->ma = (e->ma + step) & e->vrammask;
+            continue;
+        }
+
+        int oddeven;
+        uint32_t addr = ega_fetch_addr(e, &oddeven);
+        uint8_t edat[4];
+        if (e->seqregs[1] & 4) {
+            edat[0] = vram_load(addr | (uint32_t)oddeven);
+            edat[2] = vram_load(addr | (uint32_t)oddeven | 2u);
+            edat[1] = edat[3] = 0;
+        } else {
+            edat[0] = vram_load(addr);
+            edat[1] = vram_load(addr | 1u);
+            edat[2] = vram_load(addr | 2u);
+            edat[3] = vram_load(addr | 3u);
+        }
+        e->ma = (e->ma + step) & e->vrammask;
+
+        for (int group = 0; group < 4; ++group) {
+            int shift = 6 - (group * 2);
+            uint8_t dat = edatlookup[(edat[0] >> shift) & 3][(edat[1] >> shift) & 3] |
+                          (uint8_t)(edatlookup[(edat[2] >> shift) & 3][(edat[3] >> shift) & 3] << 2);
+            uint8_t pix0 = (dat >> 4) & attr_mask;
+            uint8_t pix1 = (dat & 0x0f) & attr_mask;
+            int base = group_base + group * (lowres ? 4 : 2);
+            GCCOLOR color0 = palette[pix0];
+            GCCOLOR color1 = palette[pix1];
+            put_region_pixel(base, width, region_x, region_end, color0);
+            if (lowres) {
+                put_region_pixel(base + 1, width, region_x, region_end, color0);
+                put_region_pixel(base + 2, width, region_x, region_end, color1);
+                put_region_pixel(base + 3, width, region_x, region_end, color1);
+            } else {
+                put_region_pixel(base + 1, width, region_x, region_end, color1);
+            }
+        }
+    }
+}
+
 void advance_current_line_without_render(Ega *e)
 {
     if (!e || e->scrblank || e->hdisp <= 0) {
@@ -643,12 +1075,58 @@ void advance_current_line_without_render(Ega *e)
     }
 }
 
+void render_graphics_line_region(Ega *e, unsigned width, unsigned region_x, unsigned region_width)
+{
+    if (e->scrblank) {
+        unsigned region_end = std::min<unsigned>(width, region_x + region_width);
+        if (region_x < region_end) {
+            std::fill(line_buffer + region_x, line_buffer + region_end, makecol(0, 0, 0));
+        }
+    } else if (e->gdcreg[5] & 0x20) {
+        ega_draw_2bpp_region(e, width, region_x, region_width);
+    } else {
+        ega_draw_4bpp_region(e, width, region_x, region_width);
+    }
+}
+
 bool should_skip_current_line_render(const Ega *e)
 {
     if (!e) {
         return false;
     }
     return display.should_skip_line((unsigned)e->displine);
+}
+
+void draw_scroll_exposed_regions(RenderContext *ctx,
+                                 Ega *e,
+                                 unsigned visible_line,
+                                 unsigned source_line,
+                                 unsigned width)
+{
+    uint32_t line_ma = e->ma;
+    bool advanced_line = false;
+    for (unsigned i = 0; i < e->scroll_expose_count; ++i) {
+        const ScrollExposeRegion &region = e->scroll_exposes[i];
+        if (visible_line < region.y || visible_line >= region.y + region.height) {
+            continue;
+        }
+        e->ma = line_ma;
+        render_graphics_line_region(e, width, region.x, region.width);
+        advanced_line = true;
+        if (!display.draw_line_region(ctx,
+                                      (unsigned)e->displine,
+                                      source_line,
+                                      display.vertical_scale,
+                                      width,
+                                      region.x,
+                                      region.width)) {
+            mark_display_line_range_dirty((unsigned)e->displine,
+                                          (unsigned)e->displine + 1u);
+        }
+    }
+    if (advanced_line) {
+        e->ma = (line_ma + graphics_line_advance(e)) & e->vrammask;
+    }
 }
 
 void draw_current_line(RenderContext *ctx, Ega *e)
@@ -658,10 +1136,21 @@ void draw_current_line(RenderContext *ctx, Ega *e)
         return;
     }
 
+    bool graphics_mode = (e->gdcreg[6] & 1) != 0;
     if (display.render_frame) {
         display.ensure_draw_page_ready_for_partial(ctx);
     }
-    if (should_skip_current_line_render(e)) {
+    bool skip_full_line = should_skip_current_line_render(e);
+    unsigned visible_line = 0;
+    bool expose_only_line = false;
+    if (skip_full_line && graphics_mode &&
+        display.frame_valid &&
+        display.vertical_scale != 0 &&
+        e->displine >= display.first_line) {
+        visible_line = (unsigned)e->displine - (unsigned)display.first_line;
+        expose_only_line = scroll_exposes_line(e, visible_line);
+    }
+    if (skip_full_line && !expose_only_line) {
         advance_current_line_without_render(e);
         return;
     }
@@ -669,10 +1158,22 @@ void draw_current_line(RenderContext *ctx, Ega *e)
         display.ensure_draw_page_ready_for_partial(ctx);
     }
 
+    if (skip_full_line) {
+        if (!ctx || !ctx->pGC || !display.frame_valid ||
+            e->displine < display.first_line) {
+            advance_current_line_without_render(e);
+            return;
+        }
+        unsigned source_line = ((unsigned)e->displine - (unsigned)display.first_line) *
+                               display.vertical_scale;
+        draw_scroll_exposed_regions(ctx, e, visible_line, source_line, width);
+        return;
+    }
+
     uint32_t rendered_version = display_line_dirty_version((unsigned)e->displine);
     if (e->scrblank) {
         std::fill(line_buffer, line_buffer + width, makecol(0, 0, 0));
-    } else if (!(e->gdcreg[6] & 1)) {
+    } else if (!graphics_mode) {
         ega_draw_text(e);
     } else if (e->gdcreg[5] & 0x20) {
         ega_draw_2bpp(e, width);
@@ -691,6 +1192,126 @@ void draw_current_line(RenderContext *ctx, Ega *e)
                       display.vertical_scale,
                       width,
                       rendered_version);
+}
+
+void add_scroll_expose_regions(Ega *e,
+                               int delta_x_pixels,
+                               int delta_y_lines,
+                               unsigned width,
+                               unsigned visible_lines)
+{
+    clear_scroll_exposes(e);
+    if (width == 0 || visible_lines == 0) {
+        return;
+    }
+
+    if (delta_y_lines > 0) {
+        unsigned exposed = std::min<unsigned>((unsigned)delta_y_lines, visible_lines);
+        add_scroll_expose(e, 0, visible_lines - exposed, width, exposed);
+    } else if (delta_y_lines < 0) {
+        unsigned exposed = std::min<unsigned>((unsigned)(-delta_y_lines), visible_lines);
+        add_scroll_expose(e, 0, 0, width, exposed);
+    }
+
+    if (delta_x_pixels > 0) {
+        unsigned exposed = std::min<unsigned>((unsigned)delta_x_pixels, width);
+        add_scroll_expose(e, width - exposed, 0, exposed, visible_lines);
+    } else if (delta_x_pixels < 0) {
+        unsigned exposed = std::min<unsigned>((unsigned)(-delta_x_pixels), width);
+        add_scroll_expose(e, 0, 0, exposed, visible_lines);
+    }
+}
+
+bool preserve_register_scroll(RenderContext *ctx, Ega *e, uint16_t new_start, uint8_t new_pelpan)
+{
+    clear_scroll_exposes(e);
+    clear_deferred_scroll_publish(e);
+    if (!e->latched_origin_valid) {
+        e->latched_display_start = new_start;
+        e->latched_pelpan = new_pelpan;
+        e->latched_origin_valid = true;
+        return true;
+    }
+
+    uint16_t old_start = e->latched_display_start;
+    uint8_t old_pelpan = e->latched_pelpan;
+    e->latched_display_start = new_start;
+    e->latched_pelpan = new_pelpan;
+
+    if (old_start == new_start && old_pelpan == new_pelpan) {
+        return true;
+    }
+    if (!(e->gdcreg[6] & 1) || (e->seqregs[1] & 4) || e->rowoffset <= 0) {
+        return false;
+    }
+
+    unsigned row_units = (unsigned)e->rowoffset * 2u;
+    if (row_units == 0) {
+        return false;
+    }
+
+    int32_t delta_units = (int32_t)new_start - (int32_t)old_start;
+    if (delta_units > 32767) {
+        delta_units -= 65536;
+    } else if (delta_units < -32768) {
+        delta_units += 65536;
+    }
+    int32_t page_stride_units = (int32_t)row_units * (int32_t)kKeenEgaPageStrideLines;
+    delta_units = normalize_wrapped_delta(delta_units, page_stride_units);
+    int32_t normalized_delta_units = delta_units;
+
+    int32_t delta_y_lines = delta_units / (int32_t)row_units;
+    int32_t delta_x_units = delta_units - delta_y_lines * (int32_t)row_units;
+    if (delta_x_units > (int32_t)row_units / 2) {
+        delta_x_units -= (int32_t)row_units;
+        ++delta_y_lines;
+    } else if (delta_x_units < -((int32_t)row_units / 2)) {
+        delta_x_units += (int32_t)row_units;
+        --delta_y_lines;
+    }
+
+    int delta_x_pixels =
+        (int)delta_x_units * (int)graphics_pixels_per_crtc_unit(e) +
+        ((int)effective_pelpan(new_pelpan) - (int)effective_pelpan(old_pelpan)) *
+            (int)graphics_pixels_per_pelpan_unit(e);
+    unsigned scanlines_per_row = (unsigned)(e->crtc[9] & 31) + 1u;
+    int delta_source_lines = (int)delta_y_lines * (int)scanlines_per_row;
+    int delta_y_pixels = delta_source_lines * (int)display.vertical_scale;
+    uint32_t target_origin = vram_wrapped_base(e, (uint32_t)new_start << 2);
+    int32_t delta_bytes = normalized_delta_units * 4;
+    e->deferred_scroll_publish_origin =
+        wrap_add_signed(target_origin, -delta_bytes, e->vram_limit);
+    e->deferred_scroll_line_adjust = -delta_source_lines;
+    e->deferred_scroll_publish_origin_valid = true;
+    if (delta_x_pixels == 0 && delta_y_lines == 0) {
+        return true;
+    }
+    if (e->split <= e->dispend || display.full_render_dirty_pending() ||
+        !display.frame_valid || !display.initialized || !display.pages_ready ||
+        display.vertical_scale == 0) {
+        return false;
+    }
+
+    unsigned visible_lines = display.source_height / display.vertical_scale;
+    unsigned width = current_line_width(e);
+    if (visible_lines == 0 || width == 0) {
+        return false;
+    }
+
+    int abs_delta_x = delta_x_pixels < 0 ? -delta_x_pixels : delta_x_pixels;
+    int abs_delta_y = delta_source_lines < 0 ? -delta_source_lines : delta_source_lines;
+    if (abs_delta_x > kMaxPreservedScrollPixels ||
+        abs_delta_y > kMaxPreservedScrollLines ||
+        abs_delta_x >= (int)width ||
+        abs_delta_y >= (int)visible_lines) {
+        return false;
+    }
+
+    if (!display.preserve_scroll_from_current(ctx, -delta_x_pixels, -delta_y_pixels)) {
+        return false;
+    }
+    add_scroll_expose_regions(e, delta_x_pixels, delta_source_lines, width, visible_lines);
+    return true;
 }
 
 void publish_frame(Ega *e)
@@ -804,19 +1425,89 @@ uint32_t ega_poll(Ega *e, RenderContext *ctx)
         publish_frame(e);
         e->firstline = 2000;
         e->lastline = 0;
-        e->maback = e->ma = (e->crtc[0xc] << 8) | e->crtc[0xd];
-        e->ca = (e->crtc[0xe] << 8) | e->crtc[0xf];
-        e->ma <<= 2;
-        e->maback <<= 2;
-        e->ca <<= 2;
+        if (!(e->gdcreg[6] & 1)) {
+            e->maback = e->ma = (current_display_start(e) << 2);
+            e->ca = (((uint32_t)e->crtc[0xe] << 8) | e->crtc[0xf]) << 2;
+        }
         e->vslines = 0;
     }
     if (e->vc == e->vtotal) {
+        uint16_t new_start = current_display_start(e);
+        uint8_t new_pelpan = effective_pelpan(e->attrregs[0x13]);
+        uint32_t target_deferred_origin = vram_wrapped_base(e, (uint32_t)new_start << 2);
+        bool origin_changed =
+            e->latched_origin_valid &&
+            (e->latched_display_start != new_start || e->latched_pelpan != new_pelpan);
+        if (e->gdcreg[6] & 1) {
+            if (!e->latched_origin_valid) {
+                clear_scroll_exposes(e);
+                e->latched_display_start = new_start;
+                e->latched_pelpan = new_pelpan;
+                e->latched_origin_valid = true;
+                publish_visible_origin_deferred_dirty(e, target_deferred_origin);
+                prune_deferred_scroll_dirty_for_visible_origin(e, target_deferred_origin);
+            } else if (origin_changed) {
+                if (preserve_register_scroll(ctx, e, new_start, new_pelpan)) {
+                    uint32_t publish_origin = e->deferred_scroll_publish_origin_valid ?
+                        e->deferred_scroll_publish_origin : target_deferred_origin;
+                    int publish_line_adjust = e->deferred_scroll_publish_origin_valid ?
+                        e->deferred_scroll_line_adjust : 0;
+                    bool publish_origin_dirty = has_deferred_scroll_dirty(e, publish_origin);
+                    bool target_origin_dirty =
+                        publish_origin != target_deferred_origin &&
+                        has_deferred_scroll_dirty(e, target_deferred_origin);
+                    bool published_deferred_dirty = false;
+                    if (publish_origin_dirty) {
+                        published_deferred_dirty =
+                            publish_deferred_scroll_dirty(e, publish_origin, publish_line_adjust);
+                    }
+                    if (target_origin_dirty) {
+                        published_deferred_dirty =
+                            publish_deferred_scroll_dirty(e, target_deferred_origin, 0) ||
+                            published_deferred_dirty;
+                    }
+                    if ((publish_origin_dirty || target_origin_dirty) && !published_deferred_dirty) {
+                        clear_scroll_exposes(e);
+                        clear_deferred_scroll_origin_dirty(e, publish_origin);
+                        if (publish_origin != target_deferred_origin) {
+                            clear_deferred_scroll_origin_dirty(e, target_deferred_origin);
+                        }
+                        clear_deferred_scroll_publish(e);
+                        display.force_full_render_from_start();
+                    }
+                } else {
+                    clear_scroll_exposes(e);
+                    if (e->deferred_scroll_publish_origin_valid) {
+                        clear_deferred_scroll_origin_dirty(e, e->deferred_scroll_publish_origin);
+                    }
+                    clear_deferred_scroll_origin_dirty(e, target_deferred_origin);
+                    clear_deferred_scroll_publish(e);
+                    display.force_full_render_from_start();
+                }
+                prune_deferred_scroll_dirty_for_visible_origin(e, target_deferred_origin);
+                clear_deferred_scroll_publish(e);
+            } else {
+                clear_scroll_exposes(e);
+                if (publish_visible_origin_deferred_dirty(e, target_deferred_origin)) {
+                    prune_deferred_scroll_dirty_for_visible_origin(e, target_deferred_origin);
+                }
+            }
+        } else {
+            clear_scroll_exposes(e);
+            clear_deferred_scroll_dirty(e);
+            e->latched_origin_valid = false;
+        }
         e->vc = 0;
         e->sc = e->crtc[8] & 0x1f;
         e->dispon = 1;
         e->displine = 0;
-        e->scrollcache = e->attrregs[0x13] & 7;
+        if (e->gdcreg[6] & 1) {
+            e->maback = e->ma = (uint32_t)new_start << 2;
+            e->ca = (((uint32_t)e->crtc[0xe] << 8) | e->crtc[0xf]) << 2;
+            e->scrollcache = new_pelpan;
+        } else {
+            e->scrollcache = effective_pelpan(e->attrregs[0x13]);
+        }
     }
     if (e->sc == (e->crtc[10] & 31)) {
         e->con = 1;
@@ -1018,42 +1709,95 @@ int __time_critical_func(mark_graphics_vram_write_dirty)(uint32_t address)
     }
 
     uint32_t base = normalize_vram_address(address, nullptr) & ~3u;
-    uint32_t start_base = (((uint32_t)ega.crtc[0x0c] << 8) | ega.crtc[0x0d]) << 2;
+    uint32_t start_base =
+        vram_wrapped_base(&ega, (uint32_t)visible_graphics_display_start(&ega) << 2);
     uint32_t row_bytes = (uint32_t)ega.rowoffset << 3;
     uint32_t visible_rows = (visible_lines + scanlines_per_row - 1u) / scanlines_per_row;
+    uint32_t page_stride_bytes = row_bytes * kKeenEgaPageStrideLines;
     if (row_bytes == 0 ||
-        start_base >= ega.vram_limit ||
-        visible_rows > (ega.vram_limit - start_base) / row_bytes ||
         base >= ega.vram_limit) {
         return kDirtyUnmapped;
     }
 
-    if (base < start_base) {
+    uint32_t visible_bytes = visible_rows * row_bytes;
+    int32_t relative = 0;
+    bool maps_to_current_page = false;
+    bool maps_to_deferred_page = false;
+    uint32_t deferred_origin = 0;
+    uint32_t current_relative = wrapped_delta(base, start_base, ega.vram_limit);
+    if (current_relative < visible_bytes) {
+        relative = (int32_t)current_relative;
+        maps_to_current_page = true;
+    } else {
+        if (page_stride_bytes != 0 && page_stride_bytes < ega.vram_limit) {
+            int32_t deferred_slack_bytes =
+                (int32_t)row_bytes * kMaxPreservedScrollLines;
+            int32_t deferred_before = -deferred_slack_bytes;
+            int32_t deferred_after = (int32_t)visible_bytes + deferred_slack_bytes;
+            uint32_t plus_origin = start_base;
+            uint32_t minus_origin = start_base;
+            for (unsigned distance = 1; distance <= kDeferredPageSearchDistance; ++distance) {
+                plus_origin = wrap_forward(plus_origin, page_stride_bytes, ega.vram_limit);
+                int32_t plus_relative = signed_wrapped_delta(base, plus_origin, ega.vram_limit);
+                if (plus_relative >= deferred_before && plus_relative < deferred_after) {
+                    relative = plus_relative;
+                    deferred_origin = plus_origin;
+                    maps_to_deferred_page = true;
+                    break;
+                }
+
+                minus_origin = wrap_backward(minus_origin, page_stride_bytes, ega.vram_limit);
+                int32_t minus_relative = signed_wrapped_delta(base, minus_origin, ega.vram_limit);
+                if (minus_relative >= deferred_before && minus_relative < deferred_after) {
+                    relative = minus_relative;
+                    deferred_origin = minus_origin;
+                    maps_to_deferred_page = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!maps_to_current_page && !maps_to_deferred_page) {
         return kDirtyNoVisibleChange;
     }
 
-    uint32_t relative = base - start_base;
-    uint32_t row = relative / row_bytes;
-    uint32_t row_offset = relative - row * row_bytes;
-    uint32_t visible_groups = (uint32_t)ega.hdisp + ((ega.scrollcache & 7) ? 1u : 0u);
+    int32_t row = floor_divide(relative, (int32_t)row_bytes);
+    uint32_t row_offset = (uint32_t)(relative - row * (int32_t)row_bytes);
+    uint32_t visible_groups = maps_to_deferred_page ?
+        (uint32_t)ega.hdisp + 1u :
+        (uint32_t)ega.hdisp + ((ega.scrollcache & 7) ? 1u : 0u);
     if (visible_groups == 0 || row_offset / 4u >= visible_groups) {
         return kDirtyNoVisibleChange;
     }
 
-    unsigned first_line_offset = row * scanlines_per_row;
-    if (first_line_offset >= visible_lines) {
+    int first_line_offset = row * (int32_t)scanlines_per_row;
+    if (maps_to_current_page && (first_line_offset < 0 ||
+                                 first_line_offset >= (int)visible_lines)) {
         return kDirtyNoVisibleChange;
     }
 
-    unsigned first_line = (unsigned)display.first_line + first_line_offset;
-    unsigned end_offset = std::min<unsigned>(first_line_offset + scanlines_per_row, visible_lines);
-    unsigned end_line = (unsigned)display.first_line + end_offset;
-    if (first_line >= kMaxEgaLines) {
+    if (maps_to_current_page) {
+        unsigned first_line = (unsigned)display.first_line + (unsigned)first_line_offset;
+        unsigned end_offset =
+            std::min<unsigned>((unsigned)first_line_offset + scanlines_per_row, visible_lines);
+        unsigned end_line = (unsigned)display.first_line + end_offset;
+        if (first_line >= kMaxEgaLines) {
+            return kDirtyNoVisibleChange;
+        }
+        end_line = std::min<unsigned>(end_line, kMaxEgaLines);
+        mark_display_line_range_dirty(first_line, end_line);
+        return kDirtyMapped;
+    }
+    int first_line = display.first_line + first_line_offset;
+    int end_line = first_line + (int)scanlines_per_row;
+    if (end_line <= -kDeferredDirtyLineBias ||
+        first_line >= (int)kMaxEgaLines + kDeferredDirtyLineBias) {
         return kDirtyNoVisibleChange;
     }
-    end_line = std::min<unsigned>(end_line, kMaxEgaLines);
-    mark_display_line_range_dirty(first_line, end_line);
-    return kDirtyMapped;
+    if (!mark_deferred_scroll_line_range_dirty(&ega, deferred_origin, first_line, end_line)) {
+        return kDirtyUnmapped;
+    }
+    return kDirtyNoVisibleChange;
 }
 
 bool __time_critical_func(ega_write)(uint32_t addr, uint8_t val, bool track_changes)
@@ -1168,9 +1912,15 @@ void __time_critical_func(ega_out)(uint16_t addr, uint8_t val)
             if (index == 0x10 || index == 0x14 || index < 0x10) {
                 rebuild_egapal(&ega);
             }
-            if (old != val && (index < 0x10 || index == 0x10 || index == 0x12 ||
-                               index == 0x13 || index == 0x14)) {
-                request_display_dirty();
+            bool effective_changed = old != val;
+            if (index == 0x13) {
+                effective_changed = effective_pelpan(old) != effective_pelpan(val);
+            }
+            if (effective_changed && (index < 0x10 || index == 0x10 || index == 0x12 ||
+                                      index == 0x13 || index == 0x14)) {
+                if (!(index == 0x13 && (ega.gdcreg[6] & 1))) {
+                    request_display_dirty();
+                }
             }
         }
         ega.attrff ^= 1;
@@ -1286,7 +2036,9 @@ void __time_critical_func(ega_out)(uint16_t addr, uint8_t val)
             request_timing_recalc();
         }
         if (crtc_reg_affects_pixels(index)) {
-            request_display_dirty();
+            if (!((ega.gdcreg[6] & 1) && (index == 0x0c || index == 0x0d))) {
+                request_display_dirty();
+            }
         }
         break;
     }
@@ -1360,8 +2112,11 @@ void __time_critical_func(ega_mem_write)(uint32_t address, uint8_t data)
         bool track_changes =
             !full_dirty_pending &&
             !display.content_dirty_pending();
-        bool changed = ega_write(address, data, track_changes);
+        bool changed = ega_write(address, data, full_dirty_pending || track_changes);
         if (full_dirty_pending) {
+            if (changed && (ega.gdcreg[6] & 1)) {
+                mark_graphics_vram_write_dirty(address);
+            }
             return;
         }
         if (!track_changes || changed) {

@@ -324,7 +324,12 @@ void __time_critical_func(DloDirtyDisplay::mark_line_range_dirty)(unsigned first
     unsigned count = end - first;
     uint32_t total = __atomic_add_fetch(&dirty_line_marks_, count, __ATOMIC_ACQ_REL);
     if (total > max_lines_ * 2u) {
-        request_dirty();
+        uint32_t version = next_dirty_version();
+        for (unsigned line = 0; line < max_lines_; ++line) {
+            mark_line_dirty_with_version(line, version);
+        }
+        __atomic_store_n(&dirty_line_marks_, max_lines_, __ATOMIC_RELEASE);
+        set_content_dirty();
         return;
     }
 
@@ -413,6 +418,18 @@ void DloDirtyDisplay::end_access(RenderContext *ctx)
     }
     GCPEndAccess(ctx->pGC);
     ctx->access_open = false;
+}
+
+void DloDirtyDisplay::force_full_render_from_start()
+{
+    render_frame = true;
+    render_full_frame = true;
+    render_full_frame_from_start = true;
+    draw_page_needs_clone = false;
+    if (draw_page < kPageCount) {
+        invalidate_page_hashes(draw_page);
+        page_content_valid[draw_page] = false;
+    }
 }
 
 bool DloDirtyDisplay::set_draw_base(PGC pGC, uint32_t base)
@@ -637,6 +654,144 @@ unsigned DloDirtyDisplay::current_clone_source() const
 bool DloDirtyDisplay::valid_clone_source_available() const
 {
     return current_clone_source() < kPageCount;
+}
+
+bool DloDirtyDisplay::preserve_scroll_from_current(RenderContext *ctx, int shift_x, int shift_y)
+{
+    if (!ctx || !ctx->pGC || !pages_ready || !frame_valid || !initialized ||
+        draw_page >= kPageCount || target_width_px == 0 || target_height_px == 0) {
+        return false;
+    }
+
+    long abs_shift_x = shift_x < 0 ? -(long)shift_x : (long)shift_x;
+    long abs_shift_y = shift_y < 0 ? -(long)shift_y : (long)shift_y;
+    if ((abs_shift_x == 0 && abs_shift_y == 0) ||
+        abs_shift_x >= (long)target_width_px ||
+        abs_shift_y >= (long)target_height_px) {
+        return false;
+    }
+
+    unsigned src_page = kInvalidPage;
+    if (present_pending_flag &&
+        pending_page < kPageCount &&
+        pending_page != draw_page &&
+        page_is_current(pending_page)) {
+        src_page = pending_page;
+    } else if (visible_page < kPageCount &&
+               visible_page != draw_page &&
+               page_is_current(visible_page)) {
+        src_page = visible_page;
+    } else {
+        for (unsigned page = 0; page < kPageCount; ++page) {
+            if (page != draw_page && page_is_current(page)) {
+                src_page = page;
+                break;
+            }
+        }
+    }
+    if (src_page >= kPageCount) {
+        return false;
+    }
+
+    long src_x = (long)target_origin_x_px + (shift_x < 0 ? abs_shift_x : 0);
+    long dest_x = (long)target_origin_x_px + (shift_x > 0 ? abs_shift_x : 0);
+    long src_y = (long)target_origin_y_px + (shift_y < 0 ? abs_shift_y : 0);
+    long dest_y = (long)target_origin_y_px + (shift_y > 0 ? abs_shift_y : 0);
+    long width = (long)target_width_px - abs_shift_x;
+    long height = (long)target_height_px - abs_shift_y;
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    unsigned long old_base = GCDeviceBase(ctx->pGC);
+    if (!set_draw_base(ctx->pGC, page_base[draw_page])) {
+        return false;
+    }
+    bool copied = copy_from_base(ctx,
+                                 page_base[src_page],
+                                 src_x,
+                                 src_y,
+                                 width,
+                                 height,
+                                 dest_x,
+                                 dest_y,
+                                 true);
+    set_draw_base(ctx->pGC, old_base);
+    if (!copied) {
+        return false;
+    }
+
+    bool can_remap_lines = vertical_scale != 0 &&
+                           (shift_y % (long)vertical_scale) == 0;
+    long line_shift = can_remap_lines ? (shift_y / (long)vertical_scale) : 0;
+    long dest_line_start = 0;
+    long dest_line_end = 0;
+    if (can_remap_lines) {
+        long rel_dest_y0 = dest_y - (long)target_origin_y_px;
+        long rel_dest_y1 = rel_dest_y0 + height;
+        dest_line_start = (long)first_line + rel_dest_y0 / (long)vertical_scale;
+        dest_line_end = (long)first_line +
+                        (rel_dest_y1 + (long)vertical_scale - 1) /
+                            (long)vertical_scale;
+    }
+
+    bool remap_dirty[DloDirtyDisplay::kMaxLines] = {};
+    bool any_remap_dirty = false;
+
+    for (unsigned line = 0; line < max_lines_; ++line) {
+        line_hash_[draw_page][line] = 0;
+        line_width_[draw_page][line] = 0;
+        uint32_t dirty_version = line_dirty_version(line);
+        bool needs_render = false;
+        if (can_remap_lines) {
+            uint32_t src_same_page_version =
+                __atomic_load_n(&line_page_version_[src_page][line], __ATOMIC_ACQUIRE);
+            needs_render = dirty_version != src_same_page_version;
+
+            long logical_line = (long)line;
+            if (logical_line >= dest_line_start && logical_line < dest_line_end) {
+                long source_line = logical_line - line_shift;
+                if (source_line >= 0 && source_line < (long)max_lines_) {
+                    uint32_t source_dirty_version = line_dirty_version((unsigned)source_line);
+                    uint32_t source_page_version =
+                        __atomic_load_n(&line_page_version_[src_page][source_line],
+                                        __ATOMIC_ACQUIRE);
+                    needs_render = needs_render ||
+                                   source_dirty_version != source_page_version;
+                } else {
+                    needs_render = true;
+                }
+            }
+            __atomic_store_n(&line_page_version_[draw_page][line],
+                             dirty_version,
+                             __ATOMIC_RELEASE);
+            if (needs_render) {
+                remap_dirty[line] = true;
+                any_remap_dirty = true;
+            }
+        } else {
+            __atomic_store_n(&line_page_version_[draw_page][line], 0u, __ATOMIC_RELEASE);
+            remap_dirty[line] = true;
+            any_remap_dirty = true;
+        }
+    }
+    if (any_remap_dirty) {
+        uint32_t remap_version = next_dirty_version();
+        for (unsigned line = 0; line < max_lines_; ++line) {
+            if (remap_dirty[line]) {
+                mark_line_dirty_with_version(line, remap_version);
+            }
+        }
+        set_content_dirty();
+    }
+    page_clear_pending[draw_page] = false;
+    page_content_valid[draw_page] = true;
+    page_generation[draw_page] = page_generation[src_page];
+    draw_page_needs_clone = false;
+    render_frame = true;
+    render_full_frame = false;
+    render_full_frame_from_start = false;
+    return true;
 }
 
 void DloDirtyDisplay::ensure_draw_page_ready_for_partial(RenderContext *ctx)
@@ -1102,6 +1257,117 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
         copy_duplicate_rows(ctx, screen_y0, screen_y0 + 1, screen_y1, target_width);
     }
     clear_line_dirty(page, buffer_line, rendered_version);
+}
+
+bool DloDirtyDisplay::draw_line_region(RenderContext *ctx,
+                                       unsigned buffer_line,
+                                       unsigned src_line,
+                                       unsigned src_span,
+                                       unsigned width,
+                                       unsigned region_x,
+                                       unsigned region_width)
+{
+    if (!ctx || !ctx->pGC || !line_buffer_ || !frame_valid ||
+        buffer_line >= max_lines_ || width == 0 || src_line >= source_height ||
+        region_width == 0) {
+        return false;
+    }
+
+    width = std::min<unsigned>(width, max_width_);
+    if (!window_checked_for_frame) {
+        update_window(ctx, source_width, source_height, canvas_width, canvas_height, RGB(0, 0, 0));
+        window_checked_for_frame = true;
+    }
+
+    unsigned target_width = target_width_px;
+    unsigned target_height = target_height_px;
+    if (target_width == 0 || target_height == 0 || target_width != width) {
+        return false;
+    }
+    if (region_x >= target_width) {
+        return false;
+    }
+    region_width = std::min<unsigned>(region_width, target_width - region_x);
+
+    unsigned source_end = std::min<unsigned>(src_line + std::max(1u, src_span), source_height);
+    unsigned target_y0;
+    unsigned target_y1;
+    if (target_height == source_height) {
+        target_y0 = src_line;
+        target_y1 = source_end;
+    } else {
+        target_y0 = (src_line * target_height) / source_height;
+        target_y1 = (source_end * target_height) / source_height;
+    }
+    if (target_y1 <= target_y0) {
+        return false;
+    }
+    target_y1 = std::min<unsigned>(target_y1, target_height);
+    if (target_y0 >= target_y1) {
+        return false;
+    }
+
+    unsigned screen_y0 = target_origin_y_px + target_y0;
+    unsigned screen_y1 = target_origin_y_px + target_y1;
+    unsigned raw_bytes = raw_line_bytes(region_width);
+    unsigned fill_bytes = measure_line_fill_bytes(line_buffer_ + region_x, region_width, raw_bytes);
+
+    if (raw_bytes < fill_bytes) {
+        GC srcGC;
+        if (!GCCreateWithPreallocatedMemory(ctx->pGC,
+                                            (long)region_width,
+                                            1,
+                                            line_buffer_ + region_x,
+                                            &srcGC)) {
+            return false;
+        }
+
+        GCRECT src = {0, 0, (long)region_width, 1};
+        GCPOINT dst = {
+            (long)target_origin_x_px + (long)region_x,
+            (long)screen_y0
+        };
+        begin_access(ctx);
+        GCCopyBits2(ctx->pGC, &srcGC, &src, &dst);
+        GCDelete(&srcGC);
+        ctx->emitted = true;
+        usb_pending = true;
+        for (unsigned y = screen_y0 + 1; y < screen_y1; ++y) {
+            copy_from_base(ctx,
+                           GCDeviceBase(ctx->pGC),
+                           (long)target_origin_x_px + (long)region_x,
+                           (long)screen_y0,
+                           (long)region_width,
+                           1,
+                           (long)target_origin_x_px + (long)region_x,
+                           (long)y);
+        }
+        return true;
+    }
+
+    long run_start = 0;
+    GCCOLOR run_color = line_buffer_[region_x];
+    for (unsigned x = 1; x < region_width; ++x) {
+        GCCOLOR color = line_buffer_[region_x + x];
+        if (color == run_color) {
+            continue;
+        }
+        fill(ctx,
+             target_origin_x_px + region_x + run_start,
+             screen_y0,
+             (long)x - run_start,
+             screen_y1 - screen_y0,
+             run_color);
+        run_start = x;
+        run_color = color;
+    }
+    fill(ctx,
+         target_origin_x_px + region_x + run_start,
+         screen_y0,
+         (long)region_width - run_start,
+         screen_y1 - screen_y0,
+         run_color);
+    return true;
 }
 
 bool DloDirtyDisplay::should_skip_line(unsigned line)

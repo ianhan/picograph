@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.13)
 
 set(PICO_BOARD "pico2" CACHE STRING "Pico SDK board target")
 set(PICOGRAPH_BOARD "PICOMEM_M1" CACHE STRING "PicoMEM hardware profile: PICOMEM_M1, PICOMEM_M2, PICOMEM_LP, PICOMEM_15")
-set(PICOGRAPH_MODULE "HERCULES" CACHE STRING "Single module to build into this firmware")
+set(PICOGRAPH_MODULE "EGA" CACHE STRING "Single module to build into this firmware")
 set(PICOGRAPH_SYS_CLK_KHZ "280000" CACHE STRING "RP2040/RP2350 system clock in kHz")
 set(PICOGRAPH_ENABLE_USB_HOST ON CACHE BOOL "Enable TinyUSB host support")
 set(PICOGRAPH_ENABLE_XINPUT ON CACHE BOOL "Enable the TinyUSB XInput host class")
