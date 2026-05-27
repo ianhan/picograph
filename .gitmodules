@@ -6,5 +6,5 @@
 	url = https://github.com/polpo/rp2040-psram.git
 [submodule "lib/tinyusb"]
 	path = lib/tinyusb
-	url = https://github.com/wbcbz7/tinyusb
+	url = https://github.com/ianhan/tinyusb-EPx
 	branch = rp2040-epx-only
