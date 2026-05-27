@@ -48,7 +48,6 @@ public:
     void clear_draw_page_if_needed(RenderContext *ctx, GCCOLOR clear_color);
     void queue_frame(RenderContext *ctx);
     void present_pending(PGC pGC);
-    void force_full_render_from_start();
 
     void begin_access(RenderContext *ctx);
     void end_access(RenderContext *ctx);
@@ -75,7 +74,6 @@ public:
                    unsigned width,
                    unsigned height);
     bool copy_line_raw(RenderContext *ctx, unsigned target_y0, unsigned target_y1, unsigned width);
-    bool preserve_scroll_from_current(RenderContext *ctx, int shift_x, int shift_y);
 
     bool update_window(RenderContext *ctx, unsigned width, unsigned height, GCCOLOR clear_color);
     bool update_window(RenderContext *ctx,
@@ -90,13 +88,6 @@ public:
                    unsigned source_span,
                    unsigned width,
                    uint32_t rendered_version);
-    bool draw_line_region(RenderContext *ctx,
-                          unsigned buffer_line,
-                          unsigned source_line,
-                          unsigned source_span,
-                          unsigned width,
-                          unsigned region_x,
-                          unsigned region_width);
 
     bool should_skip_line(unsigned line);
     void publish_frame(int new_first_line,
