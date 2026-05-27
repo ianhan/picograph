@@ -47,6 +47,10 @@
 /** Return 8 bpp colour number from red, green and blue components. */
 #define DLO_RGB8(red, grn, blu) ((((red) << 5) | (((grn) & 3) << 3) | ((blu) & 7)) & 0xFF)
 
+#ifndef DLO_ENABLE_HOST_UPLOAD_RLE
+#define DLO_ENABLE_HOST_UPLOAD_RLE 1
+#endif
+
 
 /* File-scope inline functions ---------------------------------------------------------*/
 
@@ -187,6 +191,12 @@ static inline dlo_col8_t rgbx8888_to_rgb323(dlo_col32_t col)
 }
 
 
+static inline uint8_t command_count(const uint32_t pixels)
+{
+  return pixels == RAW_MAX_PIXELS ? 0 : (uint8_t)pixels;
+}
+
+
 /* File-scope types --------------------------------------------------------------------*/
 
 
@@ -293,6 +303,32 @@ static dlo_retcode_t cmd_stripe24_rgbx8888(dlo_device_t * const dev,
                                             dlo_ptr_t base16,
                                             dlo_ptr_t base8,
                                             const uint32_t width);
+static dlo_retcode_t cmd_stripe24_chunk(dlo_device_t * const dev,
+                                         dlo_ptr_t base16,
+                                         dlo_ptr_t base8,
+                                         const dlo_col16_t * const pixels16,
+                                         const dlo_col8_t * const pixels8,
+                                         const uint32_t width);
+static dlo_retcode_t cmd_raw16(dlo_device_t * const dev,
+                               dlo_ptr_t base,
+                               const dlo_col16_t * const pixels,
+                               const uint32_t width);
+static dlo_retcode_t cmd_raw8(dlo_device_t * const dev,
+                              dlo_ptr_t base,
+                              const dlo_col8_t * const pixels,
+                              const uint32_t width);
+static dlo_retcode_t cmd_rle16(dlo_device_t * const dev,
+                               dlo_ptr_t base,
+                               const dlo_col16_t * const pixels,
+                               const uint32_t width,
+                               const size_t runs);
+static dlo_retcode_t cmd_rle8(dlo_device_t * const dev,
+                              dlo_ptr_t base,
+                              const dlo_col8_t * const pixels,
+                              const uint32_t width,
+                              const size_t runs);
+static size_t count_runs16(const dlo_col16_t * const pixels, const uint32_t width);
+static size_t count_runs8(const dlo_col8_t * const pixels, const uint32_t width);
 
 
 /** Given a 32 bpp colour number, return an 8 bpp colour number.
@@ -715,62 +751,21 @@ static dlo_retcode_t cmd_stripe24(dlo_device_t * const dev, dlo_ptr_t base16, dl
 {
   dlo_col16_t *ptr_col16 = stripe16;
   dlo_col8_t  *ptr_col8  = stripe8;
-  dlo_ptr_t    end       = base16 + (BYTES_PER_16BPP * width);
   uint32_t     rem       = width;
-  uint32_t     pix;
 
   /* Flush the command buffer if it's getting full */
   if (dev->bufend - dev->bufptr < BUF_HIGH_WATER_MARK)
     ERR(dlo_usb_write(dev));
 
-  for (; base16 < end; base16 += BYTES_PER_16BPP * RAW_MAX_PIXELS)
+  while (rem)
   {
     uint32_t chunk = rem >= RAW_MAX_PIXELS ? RAW_MAX_PIXELS : rem;
 
-    /* Flush the command buffer if this command will make it too full */
-    if ((size_t)(dev->bufend - dev->bufptr) <
-        DSIZEOF(WRITE_RAW16) + 4u + (BYTES_PER_16BPP * chunk) + BUF_HIGH_WATER_MARK)
-      ERR(dlo_usb_write(dev));
-
-    *(dev->bufptr)++ = WRITE_RAW16[0];
-    *(dev->bufptr)++ = WRITE_RAW16[1];
-    *(dev->bufptr)++ = (char)(base16 >> 16);
-    *(dev->bufptr)++ = (char)(base16 >> 8);
-    *(dev->bufptr)++ = (char)(base16 & 0xFF);
-    *(dev->bufptr)++ = chunk == RAW_MAX_PIXELS ? 0 : chunk;
-
-    for (pix = 0; pix < chunk; pix++)
-    {
-      dlo_col16_t col = *ptr_col16++;
-
-      *(dev->bufptr)++ = (char)(col >> 8);
-      *(dev->bufptr)++ = (char)(col & 0xFF);
-    }
-    rem -= chunk;
-  }
-
-  end = base8 + (BYTES_PER_8BPP * width);
-  rem = width;
-
-  for (; base8 < end; base8 += BYTES_PER_8BPP * RAW_MAX_PIXELS)
-  {
-    uint32_t chunk = rem >= RAW_MAX_PIXELS ? RAW_MAX_PIXELS : rem;
-
-    /* Flush the command buffer if this command will make it too full */
-    if ((size_t)(dev->bufend - dev->bufptr) <
-        DSIZEOF(WRITE_RAW8) + 4u + (BYTES_PER_8BPP * chunk) + BUF_HIGH_WATER_MARK)
-      ERR(dlo_usb_write(dev));
-
-    *(dev->bufptr)++ = WRITE_RAW8[0];
-    *(dev->bufptr)++ = WRITE_RAW8[1];
-    *(dev->bufptr)++ = (char)(base8 >> 16);
-    *(dev->bufptr)++ = (char)(base8 >> 8);
-    *(dev->bufptr)++ = (char)(base8 & 0xFF);
-    *(dev->bufptr)++ = chunk == RAW_MAX_PIXELS ? 0 : chunk;
-
-    for (pix = 0; pix < chunk; pix++)
-      *(dev->bufptr)++ = (char)(*ptr_col8++);
-
+    ERR(cmd_stripe24_chunk(dev, base16, base8, ptr_col16, ptr_col8, chunk));
+    ptr_col16 += chunk;
+    ptr_col8  += chunk;
+    base16 += BYTES_PER_16BPP * chunk;
+    base8  += BYTES_PER_8BPP * chunk;
     rem -= chunk;
   }
   return dlo_ok;
@@ -781,7 +776,6 @@ static dlo_retcode_t cmd_stripe24_rgbx8888(dlo_device_t * const dev, const uint8
 {
   const uint8_t *src;
   uint32_t      rem = width;
-  uint32_t      pix;
 
   /* Flush the command buffer if it's getting full */
   if (dev->bufend - dev->bufptr < BUF_HIGH_WATER_MARK)
@@ -791,50 +785,223 @@ static dlo_retcode_t cmd_stripe24_rgbx8888(dlo_device_t * const dev, const uint8
   while (rem)
   {
     uint32_t chunk = rem >= RAW_MAX_PIXELS ? RAW_MAX_PIXELS : rem;
-
-    /* Flush the command buffer if this command will make it too full */
-    if ((size_t)(dev->bufend - dev->bufptr) <
-        DSIZEOF(WRITE_RAW16) + 4u + (BYTES_PER_16BPP * chunk) + BUF_HIGH_WATER_MARK)
-      ERR(dlo_usb_write(dev));
-
-    *(dev->bufptr)++ = WRITE_RAW16[0];
-    *(dev->bufptr)++ = WRITE_RAW16[1];
-    *(dev->bufptr)++ = (char)(base16 >> 16);
-    *(dev->bufptr)++ = (char)(base16 >> 8);
-    *(dev->bufptr)++ = (char)(base16 & 0xFF);
-    *(dev->bufptr)++ = chunk == RAW_MAX_PIXELS ? 0 : chunk;
+    uint32_t pix;
 
     for (pix = 0; pix < chunk; pix++)
     {
-      dlo_col32_t col = *(const uint32_t *)src;
-      dlo_col16_t col16 = rgbx8888_to_rgb565(col);
+      dlo_col32_t col = RD_L(src);
 
-      *(dev->bufptr)++ = (char)(col16 >> 8);
-      *(dev->bufptr)++ = (char)(col16 & 0xFF);
+      stripe16[pix] = rgbx8888_to_rgb565(col);
       stripe8[pix] = rgbx8888_to_rgb323(col);
       src += sizeof(uint32_t);
     }
 
-    /* Flush the command buffer if this command will make it too full */
-    if ((size_t)(dev->bufend - dev->bufptr) <
-        DSIZEOF(WRITE_RAW8) + 4u + (BYTES_PER_8BPP * chunk) + BUF_HIGH_WATER_MARK)
-      ERR(dlo_usb_write(dev));
-
-    *(dev->bufptr)++ = WRITE_RAW8[0];
-    *(dev->bufptr)++ = WRITE_RAW8[1];
-    *(dev->bufptr)++ = (char)(base8 >> 16);
-    *(dev->bufptr)++ = (char)(base8 >> 8);
-    *(dev->bufptr)++ = (char)(base8 & 0xFF);
-    *(dev->bufptr)++ = chunk == RAW_MAX_PIXELS ? 0 : chunk;
-
-    for (pix = 0; pix < chunk; pix++)
-      *(dev->bufptr)++ = (char)stripe8[pix];
-
+    ERR(cmd_stripe24_chunk(dev, base16, base8, stripe16, stripe8, chunk));
     base16 += BYTES_PER_16BPP * chunk;
     base8  += BYTES_PER_8BPP * chunk;
     rem -= chunk;
   }
   return dlo_ok;
+}
+
+
+static dlo_retcode_t cmd_stripe24_chunk(dlo_device_t * const dev,
+                                         dlo_ptr_t base16,
+                                         dlo_ptr_t base8,
+                                         const dlo_col16_t * const pixels16,
+                                         const dlo_col8_t * const pixels8,
+                                         const uint32_t width)
+{
+#if DLO_ENABLE_HOST_UPLOAD_RLE
+  size_t runs16 = count_runs16(pixels16, width);
+  size_t runs8  = count_runs8(pixels8, width);
+  size_t raw16  = DSIZEOF(WRITE_RAW16) + 4u + (BYTES_PER_16BPP * width);
+  size_t raw8   = DSIZEOF(WRITE_RAW8) + 4u + (BYTES_PER_8BPP * width);
+  size_t rle16  = DSIZEOF(WRITE_RL16) + 4u + (3u * runs16);
+  size_t rle8   = DSIZEOF(WRITE_RL8) + 4u + (2u * runs8);
+
+  if (rle16 <= raw16)
+    ERR(cmd_rle16(dev, base16, pixels16, width, runs16));
+  else
+    ERR(cmd_raw16(dev, base16, pixels16, width));
+
+  if (rle8 <= raw8)
+    ERR(cmd_rle8(dev, base8, pixels8, width, runs8));
+  else
+    ERR(cmd_raw8(dev, base8, pixels8, width));
+#else
+  ERR(cmd_raw16(dev, base16, pixels16, width));
+  ERR(cmd_raw8(dev, base8, pixels8, width));
+#endif
+
+  return dlo_ok;
+}
+
+
+static dlo_retcode_t cmd_raw16(dlo_device_t * const dev,
+                               dlo_ptr_t base,
+                               const dlo_col16_t * const pixels,
+                               const uint32_t width)
+{
+  size_t size = DSIZEOF(WRITE_RAW16) + 4u + (BYTES_PER_16BPP * width);
+  uint32_t pix;
+
+  if ((size_t)(dev->bufend - dev->bufptr) < size + BUF_HIGH_WATER_MARK)
+    ERR(dlo_usb_write(dev));
+  if ((size_t)(dev->bufend - dev->bufptr) < size)
+    return dlo_err_buf_full;
+
+  *(dev->bufptr)++ = WRITE_RAW16[0];
+  *(dev->bufptr)++ = WRITE_RAW16[1];
+  *(dev->bufptr)++ = (char)(base >> 16);
+  *(dev->bufptr)++ = (char)(base >> 8);
+  *(dev->bufptr)++ = (char)(base & 0xFF);
+  *(dev->bufptr)++ = (char)command_count(width);
+
+  for (pix = 0; pix < width; pix++)
+  {
+    dlo_col16_t col = pixels[pix];
+
+    *(dev->bufptr)++ = (char)(col >> 8);
+    *(dev->bufptr)++ = (char)(col & 0xFF);
+  }
+  return dlo_ok;
+}
+
+
+static dlo_retcode_t cmd_raw8(dlo_device_t * const dev,
+                              dlo_ptr_t base,
+                              const dlo_col8_t * const pixels,
+                              const uint32_t width)
+{
+  size_t size = DSIZEOF(WRITE_RAW8) + 4u + (BYTES_PER_8BPP * width);
+  uint32_t pix;
+
+  if ((size_t)(dev->bufend - dev->bufptr) < size + BUF_HIGH_WATER_MARK)
+    ERR(dlo_usb_write(dev));
+  if ((size_t)(dev->bufend - dev->bufptr) < size)
+    return dlo_err_buf_full;
+
+  *(dev->bufptr)++ = WRITE_RAW8[0];
+  *(dev->bufptr)++ = WRITE_RAW8[1];
+  *(dev->bufptr)++ = (char)(base >> 16);
+  *(dev->bufptr)++ = (char)(base >> 8);
+  *(dev->bufptr)++ = (char)(base & 0xFF);
+  *(dev->bufptr)++ = (char)command_count(width);
+
+  for (pix = 0; pix < width; pix++)
+    *(dev->bufptr)++ = (char)pixels[pix];
+
+  return dlo_ok;
+}
+
+
+static dlo_retcode_t cmd_rle16(dlo_device_t * const dev,
+                               dlo_ptr_t base,
+                               const dlo_col16_t * const pixels,
+                               const uint32_t width,
+                               const size_t runs)
+{
+  size_t size = DSIZEOF(WRITE_RL16) + 4u + (3u * runs);
+  uint32_t pos = 0;
+
+  if ((size_t)(dev->bufend - dev->bufptr) < size + BUF_HIGH_WATER_MARK)
+    ERR(dlo_usb_write(dev));
+  if ((size_t)(dev->bufend - dev->bufptr) < size)
+    return dlo_err_buf_full;
+
+  *(dev->bufptr)++ = WRITE_RL16[0];
+  *(dev->bufptr)++ = WRITE_RL16[1];
+  *(dev->bufptr)++ = (char)(base >> 16);
+  *(dev->bufptr)++ = (char)(base >> 8);
+  *(dev->bufptr)++ = (char)(base & 0xFF);
+  *(dev->bufptr)++ = (char)command_count(width);
+
+  while (pos < width)
+  {
+    dlo_col16_t col = pixels[pos];
+    uint32_t run = 1;
+
+    while (pos + run < width && pixels[pos + run] == col)
+      run++;
+
+    *(dev->bufptr)++ = (char)command_count(run);
+    *(dev->bufptr)++ = (char)(col >> 8);
+    *(dev->bufptr)++ = (char)(col & 0xFF);
+    pos += run;
+  }
+  return dlo_ok;
+}
+
+
+static dlo_retcode_t cmd_rle8(dlo_device_t * const dev,
+                              dlo_ptr_t base,
+                              const dlo_col8_t * const pixels,
+                              const uint32_t width,
+                              const size_t runs)
+{
+  size_t size = DSIZEOF(WRITE_RL8) + 4u + (2u * runs);
+  uint32_t pos = 0;
+
+  if ((size_t)(dev->bufend - dev->bufptr) < size + BUF_HIGH_WATER_MARK)
+    ERR(dlo_usb_write(dev));
+  if ((size_t)(dev->bufend - dev->bufptr) < size)
+    return dlo_err_buf_full;
+
+  *(dev->bufptr)++ = WRITE_RL8[0];
+  *(dev->bufptr)++ = WRITE_RL8[1];
+  *(dev->bufptr)++ = (char)(base >> 16);
+  *(dev->bufptr)++ = (char)(base >> 8);
+  *(dev->bufptr)++ = (char)(base & 0xFF);
+  *(dev->bufptr)++ = (char)command_count(width);
+
+  while (pos < width)
+  {
+    dlo_col8_t col = pixels[pos];
+    uint32_t run = 1;
+
+    while (pos + run < width && pixels[pos + run] == col)
+      run++;
+
+    *(dev->bufptr)++ = (char)command_count(run);
+    *(dev->bufptr)++ = (char)col;
+    pos += run;
+  }
+  return dlo_ok;
+}
+
+
+static size_t count_runs16(const dlo_col16_t * const pixels, const uint32_t width)
+{
+  size_t runs = 0;
+  uint32_t pos = 0;
+
+  while (pos < width)
+  {
+    dlo_col16_t col = pixels[pos++];
+
+    runs++;
+    while (pos < width && pixels[pos] == col)
+      pos++;
+  }
+  return runs;
+}
+
+
+static size_t count_runs8(const dlo_col8_t * const pixels, const uint32_t width)
+{
+  size_t runs = 0;
+  uint32_t pos = 0;
+
+  while (pos < width)
+  {
+    dlo_col8_t col = pixels[pos++];
+
+    runs++;
+    while (pos < width && pixels[pos] == col)
+      pos++;
+  }
+  return runs;
 }
 
 

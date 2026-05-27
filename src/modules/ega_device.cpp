@@ -56,6 +56,7 @@ constexpr unsigned kMaxScrollExposeRegions = 3;
 constexpr unsigned kDeferredPageSearchDistance = 1;
 constexpr int kMaxPreservedScrollPixels = 64;
 constexpr int kMaxPreservedScrollLines = 24;
+constexpr bool kEnableRegisterScrollPreserve = false;
 constexpr int kDeferredDirtyLineBias = kMaxPreservedScrollLines * 4;
 constexpr unsigned kDeferredDirtyLines = kMaxEgaLines + (unsigned)kDeferredDirtyLineBias * 2u;
 constexpr unsigned kDeferredDirtyWords = (kDeferredDirtyLines + 31u) / 32u;
@@ -1226,6 +1227,13 @@ bool preserve_register_scroll(RenderContext *ctx, Ega *e, uint16_t new_start, ui
 {
     clear_scroll_exposes(e);
     clear_deferred_scroll_publish(e);
+    if (!kEnableRegisterScrollPreserve) {
+        e->latched_display_start = new_start;
+        e->latched_pelpan = new_pelpan;
+        e->latched_origin_valid = true;
+        return false;
+    }
+
     if (!e->latched_origin_valid) {
         e->latched_display_start = new_start;
         e->latched_pelpan = new_pelpan;
@@ -1728,7 +1736,7 @@ int __time_critical_func(mark_graphics_vram_write_dirty)(uint32_t address)
     if (current_relative < visible_bytes) {
         relative = (int32_t)current_relative;
         maps_to_current_page = true;
-    } else {
+    } else if (kEnableRegisterScrollPreserve) {
         if (page_stride_bytes != 0 && page_stride_bytes < ega.vram_limit) {
             int32_t deferred_slack_bytes =
                 (int32_t)row_bytes * kMaxPreservedScrollLines;

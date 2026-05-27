@@ -8,6 +8,36 @@
 
 namespace picograph {
 
+namespace {
+
+constexpr bool kEnablePageFlipping = true;
+constexpr bool kEnableDirtyLineSkip = true;
+constexpr bool kEnableRleAwareDirtyCost = false;
+constexpr bool kEnableUploadVsFillSelection = true;
+constexpr bool kEnableDuplicateRowCopy = true;
+constexpr bool kEnableAdjacentLineCopy = true;
+constexpr bool kEnableFillRunRendering = false;
+constexpr bool kEnableScrollPreserveCopy = false;
+
+uint16_t displaylink_rgb565(GCCOLOR color)
+{
+    uint32_t col = (uint32_t)color;
+    return (uint16_t)(((col & 0x000000f8u) << 8) |
+                      ((col >> 5) & 0x00000700u) |
+                      ((col >> 5) & 0x000000e0u) |
+                      ((col >> 19) & 0x0000001fu));
+}
+
+uint8_t displaylink_rgb323(GCCOLOR color)
+{
+    uint32_t col = (uint32_t)color;
+    return (uint8_t)(((col << 5) |
+                     ((col >> 5) & 0x18u) |
+                     ((col >> 16) & 0x07u)) & 0xffu);
+}
+
+}  // namespace
+
 void DloDirtyDisplay::reset(unsigned max_width, unsigned max_lines, GCCOLOR *line_buffer, const char *log_prefix)
 {
     max_width_ = std::min<unsigned>(max_width ? max_width : kMaxWidth, kMaxWidth);
@@ -86,6 +116,54 @@ unsigned DloDirtyDisplay::copy_row_bytes(unsigned pixels) const
 unsigned DloDirtyDisplay::raw_line_bytes(unsigned pixels) const
 {
     return pixels ? (3u * pixels + 12u * command_chunks(pixels)) : 0u;
+}
+
+unsigned DloDirtyDisplay::line_transfer_bytes(const GCCOLOR *data, unsigned width, unsigned stop_bytes) const
+{
+    if (!kEnableRleAwareDirtyCost) {
+        return cap_fill_bytes(raw_line_bytes(width), stop_bytes);
+    }
+
+    if (!data || width == 0) {
+        return 0;
+    }
+
+    unsigned total = 0;
+    unsigned offset = 0;
+    while (offset < width) {
+        unsigned chunk = std::min<unsigned>(256u, width - offset);
+        unsigned runs16 = 1;
+        unsigned runs8 = 1;
+        uint16_t previous16 = displaylink_rgb565(data[offset]);
+        uint8_t previous8 = displaylink_rgb323(data[offset]);
+
+        for (unsigned i = 1; i < chunk; ++i) {
+            GCCOLOR color = data[offset + i];
+            uint16_t color16 = displaylink_rgb565(color);
+            uint8_t color8 = displaylink_rgb323(color);
+
+            if (color16 != previous16) {
+                previous16 = color16;
+                ++runs16;
+            }
+            if (color8 != previous8) {
+                previous8 = color8;
+                ++runs8;
+            }
+        }
+
+        unsigned raw16 = 6u + (2u * chunk);
+        unsigned raw8 = 6u + chunk;
+        unsigned rle16 = 6u + (3u * runs16);
+        unsigned rle8 = 6u + (2u * runs8);
+        total = cap_fill_bytes(total + std::min(raw16, rle16) + std::min(raw8, rle8),
+                               stop_bytes);
+        if (stop_bytes != 0 && total > stop_bytes) {
+            return total;
+        }
+        offset += chunk;
+    }
+    return total;
 }
 
 uint32_t DloDirtyDisplay::measure_line_hash(const GCCOLOR *data, unsigned width) const
@@ -528,11 +606,14 @@ bool DloDirtyDisplay::copy_duplicate_rows(RenderContext *ctx,
                                           unsigned dest_y1,
                                           unsigned width)
 {
+    if (!kEnableDuplicateRowCopy) {
+        return false;
+    }
+
     if (!ctx || !ctx->pGC || width == 0 || dest_y1 <= dest_y0) {
         return false;
     }
 
-    bool emitted = false;
     for (unsigned y = dest_y0; y < dest_y1; ++y) {
         if (!copy_from_base(ctx,
                             GCDeviceBase(ctx->pGC),
@@ -542,13 +623,8 @@ bool DloDirtyDisplay::copy_duplicate_rows(RenderContext *ctx,
                             1,
                             (long)target_origin_x_px,
                             (long)y)) {
-            if (emitted) {
-                ctx->emitted = true;
-                usb_pending = true;
-            }
-            return emitted;
+            return false;
         }
-        emitted = true;
     }
 
     ctx->emitted = true;
@@ -600,6 +676,10 @@ uint32_t DloDirtyDisplay::next_content_generation()
 
 bool DloDirtyDisplay::clone_page(RenderContext *ctx, unsigned src_page, unsigned dest_page)
 {
+    if (!kEnablePageFlipping) {
+        return false;
+    }
+
     if (!ctx || !ctx->pGC || src_page >= kPageCount || dest_page >= kPageCount ||
         src_page == dest_page || !page_content_valid[src_page] ||
         GCWidth(ctx->pGC) <= 0 || GCHeight(ctx->pGC) <= 0) {
@@ -658,6 +738,10 @@ bool DloDirtyDisplay::valid_clone_source_available() const
 
 bool DloDirtyDisplay::preserve_scroll_from_current(RenderContext *ctx, int shift_x, int shift_y)
 {
+    if (!kEnableScrollPreserveCopy) {
+        return false;
+    }
+
     if (!ctx || !ctx->pGC || !pages_ready || !frame_valid || !initialized ||
         draw_page >= kPageCount || target_width_px == 0 || target_height_px == 0) {
         return false;
@@ -831,14 +915,23 @@ bool DloDirtyDisplay::copy_line_raw(RenderContext *ctx, unsigned target_y0, unsi
     }
 
     GCRECT src = {0, 0, (long)width, 1};
-    GCPOINT dst = {(long)target_origin_x_px, (long)target_y0};
     begin_access(ctx);
-    GCCopyBits2(ctx->pGC, &srcGC, &src, &dst);
+    for (unsigned y = target_y0; y < target_y1; ++y) {
+        GCPOINT dst = {(long)target_origin_x_px, (long)y};
+        GCCopyBits2(ctx->pGC, &srcGC, &src, &dst);
+        if (kEnableDuplicateRowCopy) {
+            break;
+        }
+    }
     GCDelete(&srcGC);
 
     ctx->emitted = true;
     usb_pending = true;
-    copy_duplicate_rows(ctx, target_y0, target_y0 + 1, target_y1, width);
+    if (kEnableDuplicateRowCopy &&
+        target_y1 > target_y0 + 1 &&
+        !copy_duplicate_rows(ctx, target_y0, target_y0 + 1, target_y1, width)) {
+        return false;
+    }
     return true;
 }
 
@@ -846,6 +939,7 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
 {
     uint32_t frame_bytes;
     bool bases_match = true;
+    bool page_mode_matches;
 
     if (!pGC || !pGC->bitmap.handle || GCWidth(pGC) <= 0 || GCHeight(pGC) <= 0) {
         pages_ready = false;
@@ -865,7 +959,11 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
         }
     }
 
-    if (pages_ready && bases_match) {
+    page_mode_matches = kEnablePageFlipping ||
+                        (!present_pending_flag &&
+                         visible_page == 0 &&
+                         draw_page == 0);
+    if (pages_ready && bases_match && page_mode_matches) {
         return true;
     }
 
@@ -873,14 +971,16 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
         page_base[page] = frame_bytes * page;
     }
     visible_page = 0;
-    draw_page = 1;
+    draw_page = kEnablePageFlipping ? 1u : 0u;
     pending_page = kInvalidPage;
     present_pending_flag = false;
     draw_page_needs_clone = false;
     pages_ready =
         set_draw_base(pGC, page_base[0]) &&
-        GCPresentDeviceDrawBase(pGC) &&
-        set_draw_base(pGC, page_base[draw_page]);
+        GCPresentDeviceDrawBase(pGC);
+    if (pages_ready) {
+        pages_ready = set_draw_base(pGC, page_base[draw_page]);
+    }
     if (!pages_ready) {
         visible_page = 0;
         draw_page = 0;
@@ -896,6 +996,10 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
 
 unsigned DloDirtyDisplay::choose_next_draw_page(unsigned fallback) const
 {
+    if (!kEnablePageFlipping) {
+        return 0;
+    }
+
     for (unsigned page = 0; page < kPageCount; ++page) {
         if (page == visible_page) {
             continue;
@@ -952,6 +1056,7 @@ void DloDirtyDisplay::queue_frame(RenderContext *ctx)
         return;
     }
     if (pages_ready &&
+        kEnablePageFlipping &&
         drop_partial_full_frames &&
         render_full_frame &&
         !render_full_frame_from_start) {
@@ -964,7 +1069,19 @@ void DloDirtyDisplay::queue_frame(RenderContext *ctx)
         return;
     }
 
-    if (pages_ready) {
+    if (pages_ready && !kEnablePageFlipping) {
+        queued_page = draw_page < kPageCount ? draw_page : 0u;
+        visible_page = queued_page;
+        pending_page = kInvalidPage;
+        present_pending_flag = false;
+        page_generation[queued_page] = next_content_generation();
+        page_content_valid[queued_page] = true;
+        draw_page = queued_page;
+        if (!set_draw_base(ctx->pGC, page_base[draw_page])) {
+            printf("%s: DisplayLink draw page reset failed\n", log_prefix_);
+            pages_ready = false;
+        }
+    } else if (pages_ready) {
         queued_page = draw_page;
         pending_page = queued_page;
         present_pending_flag = true;
@@ -1004,6 +1121,12 @@ void DloDirtyDisplay::queue_frame(RenderContext *ctx)
 
 void DloDirtyDisplay::present_pending(PGC pGC)
 {
+    if (!kEnablePageFlipping) {
+        pending_page = kInvalidPage;
+        present_pending_flag = false;
+        return;
+    }
+
     if (!pGC || !pGC->bitmap.handle || !pages_ready ||
         !present_pending_flag || pending_page >= kPageCount) {
         return;
@@ -1159,7 +1282,14 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
     unsigned page = (draw_page < kPageCount) ? draw_page : 0u;
     uint32_t hash;
     unsigned fill_bytes = 0;
-    unsigned raw_bytes = raw_line_bytes(target_width);
+    unsigned target_rows = screen_y1 - screen_y0;
+    unsigned duplicate_copy_bytes =
+        (kEnableDuplicateRowCopy && target_rows > 1) ?
+        copy_row_bytes(target_width) * (target_rows - 1u) :
+        0u;
+    unsigned raw_total_bytes = kEnableDuplicateRowCopy ?
+                               raw_line_bytes(target_width) + duplicate_copy_bytes :
+                               raw_line_bytes(target_width) * target_rows;
     bool fill_bytes_measured = false;
     if (render_full_frame) {
         if (line_width_[page][buffer_line] == target_width) {
@@ -1168,26 +1298,29 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
                    downscale_line_in_place(width, target_width);
         } else {
             LineMeasure measure = (target_width == width) ?
-                                  measure_line_hash_and_fill(line_buffer_, target_width, raw_bytes) :
-                                  downscale_line_in_place_and_measure(width, target_width, raw_bytes);
+                                  measure_line_hash_and_fill(line_buffer_, target_width, raw_total_bytes) :
+                                  downscale_line_in_place_and_measure(width, target_width, raw_total_bytes);
             hash = measure.hash;
             fill_bytes = measure.fill_bytes;
             fill_bytes_measured = true;
         }
     } else {
         LineMeasure measure = (target_width == width) ?
-                              measure_line_hash_and_fill(line_buffer_, target_width, raw_bytes) :
-                              downscale_line_in_place_and_measure(width, target_width, raw_bytes);
+                              measure_line_hash_and_fill(line_buffer_, target_width, raw_total_bytes) :
+                              downscale_line_in_place_and_measure(width, target_width, raw_total_bytes);
         hash = measure.hash;
         fill_bytes = measure.fill_bytes;
         fill_bytes_measured = true;
     }
-    if (line_hash_[page][buffer_line] == hash && line_width_[page][buffer_line] == target_width) {
+    if (kEnableDirtyLineSkip &&
+        line_hash_[page][buffer_line] == hash &&
+        line_width_[page][buffer_line] == target_width) {
         clear_line_dirty(page, buffer_line, rendered_version);
         return;
     }
 
-    if (src_line >= src_span && buffer_line > 0 &&
+    if (kEnableAdjacentLineCopy &&
+        src_line >= src_span && buffer_line > 0 &&
         line_hash_[page][buffer_line - 1u] == hash &&
         line_width_[page][buffer_line - 1u] == target_width) {
         unsigned prev_source_line = src_line - src_span;
@@ -1217,17 +1350,34 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
     }
 
     if (!fill_bytes_measured) {
-        fill_bytes = measure_line_fill_bytes(line_buffer_, target_width, raw_bytes);
+        fill_bytes = measure_line_fill_bytes(line_buffer_, target_width, raw_total_bytes);
     }
     line_hash_[page][buffer_line] = hash;
     line_width_[page][buffer_line] = (uint16_t)target_width;
 
-    bool copy_duplicate = (target_y1 - target_y0) > 1 &&
+    unsigned transfer_total_bytes =
+        line_transfer_bytes(line_buffer_, target_width, raw_line_bytes(target_width)) +
+        duplicate_copy_bytes;
+    bool copy_duplicate = kEnableDuplicateRowCopy &&
+                          target_rows > 1 &&
                           fill_bytes > copy_row_bytes(target_width);
+    unsigned fill_total_bytes = copy_duplicate ?
+                                fill_bytes + duplicate_copy_bytes :
+                                fill_bytes * target_rows;
     unsigned fill_y1 = copy_duplicate ? screen_y0 + 1 : screen_y1;
 
-    if (raw_bytes < fill_bytes && copy_line_raw(ctx, screen_y0, screen_y1, target_width)) {
+    if ((!kEnableFillRunRendering ||
+         !kEnableUploadVsFillSelection ||
+         transfer_total_bytes < fill_total_bytes) &&
+        copy_line_raw(ctx, screen_y0, screen_y1, target_width)) {
         clear_line_dirty(page, buffer_line, rendered_version);
+        return;
+    }
+
+    if (!kEnableFillRunRendering) {
+        line_hash_[page][buffer_line] = 0;
+        line_width_[page][buffer_line] = 0;
+        mark_line_dirty(buffer_line);
         return;
     }
 
@@ -1254,7 +1404,12 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
          fill_y1 - screen_y0,
          run_color);
     if (copy_duplicate) {
-        copy_duplicate_rows(ctx, screen_y0, screen_y0 + 1, screen_y1, target_width);
+        if (!copy_duplicate_rows(ctx, screen_y0, screen_y0 + 1, screen_y1, target_width)) {
+            line_hash_[page][buffer_line] = 0;
+            line_width_[page][buffer_line] = 0;
+            mark_line_dirty(buffer_line);
+            return;
+        }
     }
     clear_line_dirty(page, buffer_line, rendered_version);
 }
@@ -1309,10 +1464,29 @@ bool DloDirtyDisplay::draw_line_region(RenderContext *ctx,
 
     unsigned screen_y0 = target_origin_y_px + target_y0;
     unsigned screen_y1 = target_origin_y_px + target_y1;
-    unsigned raw_bytes = raw_line_bytes(region_width);
-    unsigned fill_bytes = measure_line_fill_bytes(line_buffer_ + region_x, region_width, raw_bytes);
+    unsigned target_rows = screen_y1 - screen_y0;
+    unsigned duplicate_copy_bytes =
+        (kEnableDuplicateRowCopy && target_rows > 1) ?
+        copy_row_bytes(region_width) * (target_rows - 1u) :
+        0u;
+    unsigned raw_total_bytes = kEnableDuplicateRowCopy ?
+                               raw_line_bytes(region_width) + duplicate_copy_bytes :
+                               raw_line_bytes(region_width) * target_rows;
+    unsigned fill_bytes =
+        measure_line_fill_bytes(line_buffer_ + region_x, region_width, raw_total_bytes);
+    unsigned transfer_total_bytes =
+        line_transfer_bytes(line_buffer_ + region_x, region_width, raw_line_bytes(region_width)) +
+        duplicate_copy_bytes;
+    bool copy_duplicate = kEnableDuplicateRowCopy &&
+                          target_rows > 1 &&
+                          fill_bytes > copy_row_bytes(region_width);
+    unsigned fill_total_bytes = copy_duplicate ?
+                                fill_bytes + duplicate_copy_bytes :
+                                fill_bytes * target_rows;
 
-    if (raw_bytes < fill_bytes) {
+    if (!kEnableFillRunRendering ||
+        !kEnableUploadVsFillSelection ||
+        transfer_total_bytes < fill_total_bytes) {
         GC srcGC;
         if (!GCCreateWithPreallocatedMemory(ctx->pGC,
                                             (long)region_width,
@@ -1323,26 +1497,40 @@ bool DloDirtyDisplay::draw_line_region(RenderContext *ctx,
         }
 
         GCRECT src = {0, 0, (long)region_width, 1};
-        GCPOINT dst = {
-            (long)target_origin_x_px + (long)region_x,
-            (long)screen_y0
-        };
         begin_access(ctx);
-        GCCopyBits2(ctx->pGC, &srcGC, &src, &dst);
+        for (unsigned y = screen_y0; y < screen_y1; ++y) {
+            GCPOINT dst = {
+                (long)target_origin_x_px + (long)region_x,
+                (long)y
+            };
+            GCCopyBits2(ctx->pGC, &srcGC, &src, &dst);
+            if (kEnableDuplicateRowCopy) {
+                break;
+            }
+        }
         GCDelete(&srcGC);
         ctx->emitted = true;
         usb_pending = true;
+        if (!kEnableDuplicateRowCopy) {
+            return true;
+        }
         for (unsigned y = screen_y0 + 1; y < screen_y1; ++y) {
-            copy_from_base(ctx,
-                           GCDeviceBase(ctx->pGC),
-                           (long)target_origin_x_px + (long)region_x,
-                           (long)screen_y0,
-                           (long)region_width,
-                           1,
-                           (long)target_origin_x_px + (long)region_x,
-                           (long)y);
+            if (!copy_from_base(ctx,
+                                GCDeviceBase(ctx->pGC),
+                                (long)target_origin_x_px + (long)region_x,
+                                (long)screen_y0,
+                                (long)region_width,
+                                1,
+                                (long)target_origin_x_px + (long)region_x,
+                                (long)y)) {
+                return false;
+            }
         }
         return true;
+    }
+
+    if (!kEnableFillRunRendering) {
+        return false;
     }
 
     long run_start = 0;
@@ -1397,6 +1585,10 @@ bool DloDirtyDisplay::should_skip_line(unsigned line)
         return false;
     }
 
+    if (!kEnableDirtyLineSkip) {
+        return false;
+    }
+
     unsigned page = (draw_page < kPageCount) ? draw_page : 0u;
     return !is_line_dirty(page, line);
 }
@@ -1446,6 +1638,9 @@ void DloDirtyDisplay::publish_frame(int new_first_line,
     render_full_frame = !was_valid || changed || full_dirty ||
                         !initialized || !pages_ready ||
                         draw_page_must_repaint;
+    if (render_full_frame && draw_page < kPageCount && !page_content_valid[draw_page]) {
+        invalidate_page_hashes(draw_page);
+    }
     render_full_frame_from_start = render_full_frame;
     draw_page_needs_clone = !render_full_frame &&
                             dirty &&

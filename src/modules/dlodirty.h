@@ -156,6 +156,7 @@ private:
     unsigned fill_run_bytes(unsigned pixels) const;
     unsigned copy_row_bytes(unsigned pixels) const;
     unsigned raw_line_bytes(unsigned pixels) const;
+    unsigned line_transfer_bytes(const GCCOLOR *data, unsigned width, unsigned stop_bytes = 0) const;
     unsigned cap_fill_bytes(unsigned fill_bytes, unsigned fill_stop_bytes) const;
     uint32_t measure_line_hash(const GCCOLOR *data, unsigned width) const;
     LineMeasure measure_line_hash_and_fill(const GCCOLOR *data, unsigned width, unsigned fill_stop_bytes) const;
