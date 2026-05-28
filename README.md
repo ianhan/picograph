@@ -2,7 +2,7 @@
 
 PicoGraph is a Pico 2 mounted on a PicoMEM 1.4, running custom firmware that hosts a USB DisplayLink adapter via TinyUSB and emulates PC graphics adapters on the ISA bus. It started out as tooling to snoop and visualize I/O and memory accesses for my FPGA projects, and turned into the first Pico-based ISA video card.
 
-<img src="docs/images/picograph.jpg" alt="PicoGraph running on PicoMEM hardware" width="640">
+<img src="docs/images/picograph-side-by-side.jpg" alt="PicoGraph running on PicoMEM hardware" width="960">
 
 ## Modules:
 
