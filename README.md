@@ -21,4 +21,4 @@ USB 2.0 DisplayLink adapters (DL-1x0 and DL-1x5) are supported.
 
 The software portions of this repository as a collection are licensed under the GNU GPL version 2. Some files are individually dual-licensed under BSD or MIT licenses – see the license in the file headers for details.
 
-This is experimental firmware for [PicoMEM](https://github.com/FreddyVRetro/ISA-PicoMEM) hardware that uses [PicoGUS](https://github.com/polpo/picogus)'s software model. Credit goes to both Ian Polpo and FreddyV for those projects: the former for the ISA trap hardware and PIO base, and the latter for the modular design this builds on.
+Experimental firmware for FreddyV’s [PicoMEM](https://github.com/FreddyVRetro/ISA-PicoMEM) hardware, inspired by Ian Polpo’s [PicoGUS](https://github.com/polpo/picogus) software architecture.
