@@ -1,72 +1,24 @@
 # PicoGraph
 
-PicoGraph is a firmware project that combines PicoGUS's build-time modular shape with PicoMEM's ISA bus hardware for experimentation.
+PicoGraph is a Pico 2 mounted on a PicoMEM 1.4, running custom firmware that hosts a USB DisplayLink adapter via TinyUSB and emulates PC graphics adapters on the ISA bus. It started out as tooling to snoop and visualize I/O and memory accesses for my FPGA projects, and turned into the first Pico-based ISA video card.
 
-It intentionally does not port PicoGUS's GUS, SB, AdLib, MPU, USB, or NE2000 device implementations. Instead, one module is compiled into the firmware at a time and that module claims the I/O and memory windows it wants to trap on PicoMEM hardware.
+<img src="docs/images/picograph.jpg" alt="PicoGraph running on PicoMEM hardware" width="640">
 
-## Layout
+## Modules:
 
-- `CMakeLists.txt`: Pico SDK build with `PICOGRAPH_MODULE` and `PICOGRAPH_BOARD` selection.
-- `src/framework`: module registry, mirroring PicoGUS's one-firmware-per-device model.
-- `src/hw`: PicoGraph ISA trap table and bus loop for PicoMEM hardware.
-- `src/modules/ega_device.cpp`: IBM EGA-compatible emulation based on PCem, displayed through DisplayLink.
-- `src/modules/hercules_device.cpp`: Hercules/MDA-compatible text and Hercules graphics emulation displayed through DisplayLink.
-- `src/modules/sample_device.cpp`: sample module covering I/O traps, memory traps, I/O snoops, and memory snoops.
-- `src/modules/register_view.cpp`: passive VGA/MCGA register, POST, and palette display module.
-- `lib`: submodules for optional PSRAM and USB-host support.
-- `pio`: PicoMEM ISA PIO programs copied as hardware assets.
-- `docs/trap-map.md`: all I/O and memory spaces the PicoMEM trap fabric can expose.
+- `EGA`: IBM EGA-compatible emulation based on PCem.
+- `HERCULES`: Hercules/MDA text and graphics based on PCem.
+- `MDA`: Strict MDA support.
+- `REGISTER_VIEW`: passive VGA/MCGA register, POST, and palette display.
+- `SAMPLE`: minimal example for I/O traps, memory traps, and write-only snoops.
 
-## Build
+## DisplayLink/libdlo
 
-```sh
-cmake -S . -B build -DPICO_SDK_PATH=~/pico-sdk
-cmake --build build
-```
+This project has a heavily modified version of the libdlo DisplayLink library - first for TinyUSB support a couple of years ago, and later for run-length encoding.
+USB 2.0 DisplayLink adapters (DL-1x0 and DL-1x5) are supported.
 
-Useful options:
+## License
 
-```sh
--DPICOGRAPH_BOARD=PICOMEM_M2
--DPICOGRAPH_MODULE=REGISTER_VIEW
--DPICOGRAPH_MODULE=HERCULES
--DPICOGRAPH_MODULE=EGA
--DPICOGRAPH_MODULE=SAMPLE
--DPICOGRAPH_EGA_MEMORY_KB=256
--DPICOGRAPH_EGA_MONITOR_TYPE=COLOR_ECD
--DPICOGRAPH_MONOCHROME_DISPLAY_COLOR=GREEN
--DPICOGRAPH_SAMPLE_IO_BASE=0x300
--DPICOGRAPH_SAMPLE_MEM_BASE=0xd0000
--DPICOGRAPH_SAMPLE_MEM_SNOOP_BASE=0xb8000
--DPICOGRAPH_ENABLE_USB_HOST=ON
--DPICOGRAPH_ENABLE_PSRAM=ON
-```
+The software portions of this repository as a collection are licensed under the GNU GPL version 2. Some files are individually dual-licensed under BSD or MIT licenses – see the license in the file headers for details.
 
-Supported board profiles:
-
-- `PICOMEM_M1`: PicoMEM 1.0 through 1.14, original mux
-- `PICOMEM_M2`: PicoMEM mux v2 style, default
-- `PICOMEM_LP`: no-AEN PicoMEM LP / 1.2A style
-- `PICOMEM_15`: PicoMEM 1.5 PIO asset, included as a starting point for RP2350B work
-
-## Trap Capability
-
-PicoMEM can trap the full 10-bit ISA I/O space, `0x000-0x3ff`, in 8-port slots.
-
-PicoMEM can trap the full 20-bit PC memory space, `0x00000-0xfffff`, in 8 KiB slots.
-
-Modules can also register `io_snoops` and `mem_snoops`. Snoop ranges use the same slot granularity as traps, but only observe write cycles. A snoop does not insert a wait state, does not answer read cycles, and does not drive data back onto the ISA bus.
-
-See `docs/trap-map.md` for the concrete ranges and caveats.
-
-## Adding A Module
-
-Create a new file in `src/modules`, define a `picograph::Module`, add a `PICOGRAPH_MODULE_*` branch in `src/framework/module_registry.cpp`, then add the file and compile definition branch in `CMakeLists.txt`.
-
-The important rule is the PicoGUS one: build one hardware personality into the firmware. Do not make every device active at once unless you are explicitly designing a combined firmware.
-
-## Optional Hardware Helpers
-
-`picograph/psram.h` wraps the checked-in `lib/rp2040-psram` submodule with a small template-facing API. The start path follows ISA-PicoMEM's RP2040 DMA path: PIO1, an auto-claimed state machine, a target 220 MHz PSRAM PIO clock, stronger output drive on CS/SCK/MOSI, and an 8 MB boundary probe using `0xaa`/`0x55`. Defaults match ISA-PicoMEM's PSRAM pins: CS 5, SCK 6, MOSI 7, MISO 4. Override them with the `PICOGRAPH_PSRAM_PIN_*` CMake cache values.
-
-`picograph/usb_host.h` wraps TinyUSB host polling and keeps the latest keyboard, mouse, and XInput gamepad state. Its lifecycle mirrors ISA-PicoMEM: `usb_host_start()` refuses to start when USB serial stdio is active, starts TinyUSB with `tuh_init(BOARD_TUH_RHPORT)`, and `usb_host_task()` polls `tuh_task()` only while enabled. The TinyUSB submodule is the same USB library ISA-PicoMEM keeps under `src/lib/tinyusb`; `lib/tusb_xinput` supplies the XInput class driver.
+This is experimental firmware for [PicoMEM](https://github.com/FreddyVRetro/ISA-PicoMEM) hardware that uses [PicoGUS](https://github.com/polpo/picogus)'s software model. Credit goes to both Ian Polpo and FreddyV for those projects: the former for the ISA trap hardware and PIO base, and the latter for the modular design this builds on.
