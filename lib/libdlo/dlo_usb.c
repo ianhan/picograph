@@ -492,7 +492,6 @@ dlo_retcode_t dlo_usb_close(dlo_device_t * const dev)
       dev->bufend = NULL;
     }
     dev->claimed = false;
-    usbh_edpt_release(dev->cnct->udev, dev->cnct->uhand);
   }
   return dlo_ok;
 }

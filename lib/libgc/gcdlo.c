@@ -384,16 +384,19 @@ GCBOOL DLO_HWSetupDevice(GCDEVICE *pDevice, GCBITMAP *pDisplaySurface, void *par
 static GC gcDisplay;
 
 GCBOOL GCDisplayLinkCreate (
-    GC *pGC,
-    dlo_dev_t uid)
+    dlo_dev_t uid,
+    uint8_t dev_addr)
 {
-    return GCInitialize((HWSETUPDEVICE)DLO_HWSetupDevice, uid, pGC);
+    return GCInitialize((HWSETUPDEVICE)DLO_HWSetupDevice, uid, &gcDisplay);
 }
 
-void GCDisplayLinkShutDown (GC *pGC)
+void GCDisplayLinkShutDown (uint8_t dev_addr)
 {
+    GC *pGC = &gcDisplay;
     GCDEVICE* pDevice = &pGC->device;
     GCBITMAP *pDisplaySurface = &pGC->bitmap;
+
+    dlo_release_device(DLO_HANDLE(pDisplaySurface));
 
     pDevice->HWBeginAccess =        (HWBEGINACCESS)NULL;
     pDevice->HWEndAccess =          (HWENDACCESS)NULL;
@@ -425,10 +428,3 @@ PGC GCDisplay(void)
     return &gcDisplay;
 }
 
-void dlo_device_configured (dlo_dev_t uid)
-{
-    printf("gc: dlo device configured\n");
-    if (!GCDisplayLinkCreate(&gcDisplay, uid)) {
-        printf("gc: displaylink initialization failed\n");
-    }
-}

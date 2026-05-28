@@ -10,10 +10,11 @@ extern "C" {
 #endif
 
 GCBOOL GCDisplayLinkCreate(
-    GC *pGC,
-    dlo_dev_t uid);
+    dlo_dev_t uid,
+    uint8_t dev_addr);
 
-void GCDisplayLinkShutDown(GC *pGC);
+void GCDisplayLinkShutDown(
+    uint8_t dev_addr);
 
 #ifdef __cplusplus
 }

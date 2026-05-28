@@ -12,6 +12,9 @@
 
 #if PICOGRAPH_ENABLE_DISPLAYLINK
 #include "libdlo.h"
+extern "C" {
+#include "gcdlo.h"
+}
 #endif
 
 namespace picograph {
@@ -34,10 +37,6 @@ uint32_t tinyusb_start_ms;
 bool displaylink_initialized;
 bool displaylink_configured;
 uint8_t displaylink_dev_addr;
-uint8_t pending_displaylink_dev_addr;
-uint8_t displaylink_attempts;
-uint32_t next_displaylink_attempt_ms;
-uint32_t displaylink_retry_deadline_ms;
 #endif
 
 uint32_t now_ms() {
@@ -122,18 +121,12 @@ bool start_tinyusb_host() {
 }
 
 #if PICOGRAPH_ENABLE_DISPLAYLINK
-void clear_displaylink_retry(uint8_t dev_addr) {
-    if (pending_displaylink_dev_addr == dev_addr) {
-        pending_displaylink_dev_addr = 0;
-        displaylink_attempts = 0;
-    }
-}
-
-void schedule_displaylink_retry(uint8_t dev_addr) {
-    pending_displaylink_dev_addr = dev_addr;
-    next_displaylink_attempt_ms = now_ms() + kDisplayLinkRetryDelayMs;
-    if (displaylink_retry_deadline_ms == 0) {
-        displaylink_retry_deadline_ms = now_ms() + kDisplayLinkRetryWindowMs;
+void handle_displaylink_umount(uint8_t dev_addr) {
+    printf("displaylink: umount\n");
+    if (picograph::displaylink_dev_addr == dev_addr) {
+        GCDisplayLinkShutDown(dev_addr);
+        picograph::displaylink_configured = false;
+        picograph::displaylink_dev_addr = 0;
     }
 }
 
@@ -145,6 +138,7 @@ bool handle_displaylink_mount(uint8_t dev_addr) {
         return true;
     }
 
+    printf("displaylink: mount\n");
     if (displaylink_configured) {
         return true;
     }
@@ -181,44 +175,16 @@ bool handle_displaylink_mount(uint8_t dev_addr) {
 
     dlo_fill_rect(uid, nullptr, nullptr, DLO_RGB(0, 0, 0));
     dlo_flush_usb(uid, true);
-    if (dlo_device_configured) {
-        dlo_device_configured(uid);
+
+
+    if (!GCDisplayLinkCreate(uid, dev_addr)) {
+        printf("gc: displaylink initialization failed\n");
     }
+
     set_status(dev_addr, "DisplayLink display");
     displaylink_configured = true;
     displaylink_dev_addr = dev_addr;
-    clear_displaylink_retry(dev_addr);
-    displaylink_retry_deadline_ms = 0;
     return true;
-}
-
-void retry_displaylink_mount() {
-    if (pending_displaylink_dev_addr == 0 || !time_reached(next_displaylink_attempt_ms)) {
-        return;
-    }
-
-    uint8_t dev_addr = pending_displaylink_dev_addr;
-    if (!tuh_mounted(dev_addr)) {
-        clear_displaylink_retry(dev_addr);
-        displaylink_retry_deadline_ms = 0;
-        return;
-    }
-
-    if (handle_displaylink_mount(dev_addr)) {
-        return;
-    }
-
-    ++displaylink_attempts;
-    if (time_reached(displaylink_retry_deadline_ms)) {
-        printf("usb host: DisplayLink setup timed out dev=%u attempts=%u\n",
-               dev_addr,
-               displaylink_attempts);
-        clear_displaylink_retry(dev_addr);
-        displaylink_retry_deadline_ms = 0;
-        return;
-    }
-
-    next_displaylink_attempt_ms = now_ms() + kDisplayLinkRetryDelayMs;
 }
 #endif
 
@@ -297,9 +263,6 @@ void usb_host_task() {
     }
 
     tuh_task();
-#if PICOGRAPH_ENABLE_DISPLAYLINK
-    retry_displaylink_mount();
-#endif
 }
 
 const UsbHostState &usb_host_state() {
@@ -310,23 +273,17 @@ const UsbHostState &usb_host_state() {
 
 extern "C" void tuh_mount_cb(uint8_t dev_addr) {
     (void)dev_addr;
-    picograph::refresh_mount_count();
+    printf("tuh mount cb\n");
 #if PICOGRAPH_ENABLE_DISPLAYLINK
-    if (!picograph::handle_displaylink_mount(dev_addr)) {
-        picograph::schedule_displaylink_retry(dev_addr);
-    }
+    picograph::handle_displaylink_mount(dev_addr);
 #endif
 }
 
 extern "C" void tuh_umount_cb(uint8_t dev_addr) {
-    (void)dev_addr;
-    picograph::refresh_mount_count();
+    (void)dev_addr;    printf("tuh mount cb\n");
+
 #if PICOGRAPH_ENABLE_DISPLAYLINK
-    picograph::clear_displaylink_retry(dev_addr);
-    if (picograph::displaylink_dev_addr == dev_addr) {
-        picograph::displaylink_configured = false;
-        picograph::displaylink_dev_addr = 0;
-    }
+    picograph::handle_displaylink_umount(dev_addr);
 #endif
 }
 
