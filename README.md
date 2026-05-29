@@ -6,6 +6,7 @@ PicoGraph is a Pico 2 mounted on a PicoMEM 1.4, running custom firmware that hos
 
 ## Modules:
 
+- `CL5429`: Cirrus Logic CL-GD5429-compatible emulation based on PCem.
 - `VGA`: IBM VGA-compatible emulation based on PCem.
 - `EGA`: IBM EGA-compatible emulation based on PCem.
 - `HERCULES`: Hercules/MDA text and graphics based on PCem.

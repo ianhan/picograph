@@ -6,6 +6,7 @@ const Module &register_view_module();
 const Module &hercules_module();
 const Module &ega_module();
 const Module &vga_module();
+const Module &cl5429_module();
 const Module &mda_module();
 const Module &sample_module();
 
@@ -18,6 +19,8 @@ const Module &active_module() {
     return ega_module();
 #elif PICOGRAPH_MODULE_VGA
     return vga_module();
+#elif PICOGRAPH_MODULE_CL5429
+    return cl5429_module();
 #elif PICOGRAPH_MODULE_MDA
     return mda_module();
 #elif PICOGRAPH_MODULE_SAMPLE
