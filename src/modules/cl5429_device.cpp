@@ -31,10 +31,27 @@ constexpr uint32_t kVgaRomSize = 0x00008000;
 #define PICOGRAPH_CL5429_MEMORY_KB 256
 #endif
 
-static_assert(PICOGRAPH_CL5429_MEMORY_KB == 256,
-              "PICOGRAPH_CL5429_MEMORY_KB is currently limited to 256 without PSRAM");
+constexpr uint32_t ceil_pow2_u32(uint32_t value)
+{
+    if (value <= 1u) {
+        return 1u;
+    }
+    --value;
+    value |= value >> 1u;
+    value |= value >> 2u;
+    value |= value >> 4u;
+    value |= value >> 8u;
+    value |= value >> 16u;
+    return value + 1u;
+}
 
-constexpr uint32_t kVgaVramSize = (uint32_t)PICOGRAPH_CL5429_MEMORY_KB * 1024u;
+static_assert(PICOGRAPH_CL5429_MEMORY_KB > 0,
+              "PICOGRAPH_CL5429_MEMORY_KB must be greater than zero");
+
+constexpr uint32_t kConfiguredVgaVramKb = (uint32_t)PICOGRAPH_CL5429_MEMORY_KB;
+constexpr uint32_t kVgaVramSize = kConfiguredVgaVramKb * 1024u;
+constexpr uint32_t kVgaVramMaskSize = ceil_pow2_u32(kVgaVramSize);
+constexpr uint32_t kVgaVramMask = kVgaVramMaskSize - 1u;
 
 constexpr unsigned kMaxVgaWidth = 1024;
 constexpr unsigned kMaxVgaLines = 512;
@@ -362,17 +379,28 @@ void __time_critical_func(rebuild_egapal)(Vga *e)
 
 inline uint8_t __time_critical_func(vram_load)(uint32_t addr)
 {
-    return __atomic_load_n(&vga.vram[addr & vga.vrammask], __ATOMIC_RELAXED);
+    uint32_t masked = addr & vga.vrammask;
+    if (masked >= vga.vram_limit) {
+        return 0xff;
+    }
+    return __atomic_load_n(&vga.vram[masked], __ATOMIC_RELAXED);
 }
 
 inline void __time_critical_func(vram_store)(uint32_t addr, uint8_t val)
 {
-    __atomic_store_n(&vga.vram[addr & vga.vrammask], val, __ATOMIC_RELAXED);
+    uint32_t masked = addr & vga.vrammask;
+    if (masked >= vga.vram_limit) {
+        return;
+    }
+    __atomic_store_n(&vga.vram[masked], val, __ATOMIC_RELAXED);
 }
 
 inline bool __time_critical_func(vram_store_changed)(uint32_t addr, uint8_t val)
 {
     uint32_t masked = addr & vga.vrammask;
+    if (masked >= vga.vram_limit) {
+        return false;
+    }
     uint8_t old = __atomic_load_n(&vga.vram[masked], __ATOMIC_RELAXED);
     if (old == val) {
         return false;
@@ -423,6 +451,11 @@ unsigned truecolor_bytes_per_pixel(const Vga *e)
     default:
         return 1;
     }
+}
+
+bool cl_8bpp_lowres_doubling(const Vga *e)
+{
+    return e->lowres && !cl_packed_linear(e);
 }
 
 void put_pixel(unsigned x, GCCOLOR color)
@@ -695,7 +728,7 @@ void vga_draw_8bpp(Vga *e, unsigned width)
     const GCCOLOR *palette = e->pallook;
     unsigned out = 0;
 
-    if (e->lowres) {
+    if (cl_8bpp_lowres_doubling(e)) {
         int hscroll = e->scrollcache & 6;
         std::fill(line_buffer, line_buffer + width, palette[0]);
         while (out < width + (unsigned)hscroll) {
@@ -766,7 +799,7 @@ void advance_current_line_without_render(Vga *e)
         e->ma = (e->ma + current_line_width(e) * truecolor_bytes_per_pixel(e)) & e->vrammask;
     } else if ((e->gdcreg[5] & 0x60) == 0x40 || (e->gdcreg[5] & 0x60) == 0x60) {
         uint32_t bytes = current_line_width(e);
-        if (e->lowres) {
+        if (cl_8bpp_lowres_doubling(e)) {
             bytes = (bytes + 1u) / 2u;
         }
         e->ma = (e->ma + bytes) & e->vrammask;
@@ -857,7 +890,7 @@ void publish_frame(Vga *e)
             e->video_res_y *= 2;
         }
         e->video_res_y /= (e->crtc[9] & 31) + 1;
-        if ((e->gdcreg[5] & 0x40) && e->lowres) {
+        if ((e->gdcreg[5] & 0x40) && cl_8bpp_lowres_doubling(e)) {
             e->video_res_x /= 2;
         }
         if (e->truecolor_bpp) {
@@ -2186,7 +2219,7 @@ void init()
 
     vga.pallook = pallook256;
     vga.vram_limit = kVgaVramSize;
-    vga.vrammask = kVgaVramSize - 1u;
+    vga.vrammask = kVgaVramMask;
     vga.decode_mask = 0x7fffffu;
     vga.banked_mask = 0xffffu;
     vga.bank[1] = 0x8000u;
@@ -2218,7 +2251,7 @@ void init()
     printf("cl5429: PCem CL-GD5429 I/O 0x%03x-0x%03x, VRAM %u KB, ROM 0x%05lx-0x%05lx\n",
            kVgaIoBase,
            kVgaIoBase + kVgaIoSize - 1,
-           (unsigned)PICOGRAPH_CL5429_MEMORY_KB,
+           (unsigned)kConfiguredVgaVramKb,
            (unsigned long)kVgaRomBase,
            (unsigned long)(kVgaRomBase + kVgaRomSize - 1));
 }

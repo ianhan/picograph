@@ -271,7 +271,7 @@ elseif(PICOGRAPH_MODULE STREQUAL "VGA")
 elseif(PICOGRAPH_MODULE STREQUAL "CL5429")
     target_compile_definitions(picograph PRIVATE
         PICOGRAPH_MODULE_CL5429=1
-        PICOGRAPH_CL5429_MEMORY_KB=256
+        PICOGRAPH_CL5429_MEMORY_KB=304
     )
 elseif(PICOGRAPH_MODULE STREQUAL "MDA")
     target_compile_definitions(picograph PRIVATE
