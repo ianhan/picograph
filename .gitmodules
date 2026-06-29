@@ -8,3 +8,6 @@
 	path = lib/tinyusb
 	url = https://github.com/ianhan/tinyusb-EPx
 	branch = rp2040-epx-only
+[submodule "lib/gc"]
+	path = lib/gc
+	url = https://www.github.com/ianhan/gc

@@ -96,13 +96,19 @@ if(PICOGRAPH_ENABLE_DISPLAYLINK)
         message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires lib/libdlo")
     endif()
     add_subdirectory(lib/libdlo)
+    if(TARGET libdlo AND NOT TARGET tinyusb_libdlo)
+        add_library(tinyusb_libdlo ALIAS libdlo)
+    endif()
 endif()
 
 if(PICOGRAPH_ENABLE_GC)
-    if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/libgc/CMakeLists.txt)
-        message(FATAL_ERROR "PICOGRAPH_ENABLE_GC requires lib/libgc")
+    if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/gc/CMakeLists.txt)
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_GC requires lib/gc")
     endif()
-    add_subdirectory(lib/libgc)
+    add_subdirectory(lib/gc)
+    if(PICOGRAPH_ENABLE_DISPLAYLINK AND NOT TARGET gc::displaylink)
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_GC with PICOGRAPH_ENABLE_DISPLAYLINK requires gc::displaylink")
+    endif()
 endif()
 
 set(PICOGRAPH_MODULE_SOURCE "")
@@ -196,13 +202,15 @@ else()
 endif()
 
 if(PICOGRAPH_ENABLE_DISPLAYLINK)
-    target_link_libraries(picograph libdlo)
-    target_include_directories(picograph PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo)
+    target_link_libraries(picograph tinyusb_libdlo)
     target_compile_definitions(picograph PRIVATE
         PICOGRAPH_ENABLE_DISPLAYLINK=1
         PICOGRAPH_DISPLAYLINK_WIDTH=${PICOGRAPH_DISPLAYLINK_WIDTH}
         PICOGRAPH_DISPLAYLINK_HEIGHT=${PICOGRAPH_DISPLAYLINK_HEIGHT}
         PICOGRAPH_DISPLAYLINK_REFRESH=${PICOGRAPH_DISPLAYLINK_REFRESH}
+        GCDLO_FORCED_RES_WIDTH=${PICOGRAPH_DISPLAYLINK_WIDTH}
+        GCDLO_FORCED_RES_HEIGHT=${PICOGRAPH_DISPLAYLINK_HEIGHT}
+        GCDLO_FORCED_RES_HZ=${PICOGRAPH_DISPLAYLINK_REFRESH}
         CFG_TUH_API_EDPT_XFER=1
     )
 else()
@@ -210,8 +218,11 @@ else()
 endif()
 
 if(PICOGRAPH_ENABLE_GC)
-    target_link_libraries(picograph libgc)
-    target_include_directories(picograph PRIVATE ${CMAKE_CURRENT_LIST_DIR}/lib/libgc)
+    if(PICOGRAPH_ENABLE_DISPLAYLINK)
+        target_link_libraries(picograph gc::displaylink)
+    else()
+        target_link_libraries(picograph gc::core)
+    endif()
     target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_GC=1)
 else()
     target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_GC=0)
