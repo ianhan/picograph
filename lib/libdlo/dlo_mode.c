@@ -55,6 +55,14 @@ const uint32_t endian = 1;
 /** Command bytes needed to update both 16 bpp and 8 bpp frame base registers. */
 #define SET_BASE_COMMAND_BYTES (DSIZEOF(WRITE_VIDREG_LOCK) + (6u * 4u) + DSIZEOF(WRITE_VIDREG_UNLOCK))
 
+/** Offset of the colour depth value byte within a fixed-mode register script.
+ *  The scripts open with "af 20 ff 00" (batch lock) then "af 20 00 <depth>".
+ */
+#define MODE_DATA_COLOR_DEPTH_OFFSET (7u)
+
+/** Largest fixed-mode register script we expect (they are all 146 bytes). */
+#define MODE_DATA_MAX_BYTES (160u)
+
 /** Return non-zero if the host is big endian or zero if the host is little endian.
  */
 #define IS_BIGENDIAN() ((*(char*)&endian) == '\0')
@@ -727,7 +735,7 @@ static dlo_retcode_t mode_set_from_edid(dlo_device_t * const dev, edid_detail_un
   dev->base8          = base + (BYTES_PER_16BPP * edid->hActive * edid->vActive);
   ERR(set_base(dev, dev->mode.view.base, dev->base8));
 
-  ERR(edid_to_vreg_commands(dev, edid, 24));
+  ERR(edid_to_vreg_commands(dev, edid, DLO_VIEW_BPP));
 
   /* Flush the command buffer */
   ERR(dlo_usb_write(dev));
@@ -738,7 +746,7 @@ static dlo_retcode_t mode_set_from_edid(dlo_device_t * const dev, edid_detail_un
   /* Update the device with the new mode details */
   dev->mode.view.width = edid->hActive;
   dev->mode.view.height = edid->vActive;
-  dev->mode.view.bpp = 24;
+  dev->mode.view.bpp = DLO_VIEW_BPP;
   dev->mode.refresh = refresh_hz_from_edid(edid);
 
   DPRINTF("mode: mode_set_from_edid %ux%u @ %u Hz %u bpp (base &%X base8 &%X)\n",
@@ -778,14 +786,32 @@ static dlo_retcode_t mode_select(dlo_device_t * const dev, const dlo_mode_t * co
       desc->view.bpp    != dev->mode.view.bpp)
   {
     ERR(dlo_usb_chan_sel(dev, dlo_mode_data[mode].mode_en, dlo_mode_data[mode].mode_en_sz));
+#if DLO_16BPP_SCANOUT
+    {
+      /* The fixed-mode scripts program 24 bpp split-plane scanout. They are XOR
+       * stream encrypted, so flipping the plaintext colour depth from 0x01 (24 bpp)
+       * to 0x00 (16 bpp) is a one-bit change to the same cipher text byte.
+       */
+      char script[MODE_DATA_MAX_BYTES];
+      size_t script_sz = dlo_mode_data[mode].data_sz;
+
+      if (script_sz > sizeof(script) || script_sz <= MODE_DATA_COLOR_DEPTH_OFFSET)
+        return dlo_err_bad_mode;
+      dlo_memcpy(script, dlo_mode_data[mode].data, script_sz);
+      script[MODE_DATA_COLOR_DEPTH_OFFSET] ^= 0x01;
+      ERR(dlo_usb_write_buf(dev, script, script_sz));
+    }
+#else
     ERR(dlo_usb_write_buf(dev, dlo_mode_data[mode].data, dlo_mode_data[mode].data_sz));
+#endif
     ERR(dlo_usb_chan_sel(dev, DLO_MODE_POSTAMBLE, DSIZEOF(DLO_MODE_POSTAMBLE)));
   }
 
   /* Update the device with the new mode details */
-  dev->mode         = *desc;
-  dev->mode.refresh = dlo_mode_data[mode].refresh;
-  dev->low_blank    = dlo_mode_data[mode].low_blank;
+  dev->mode          = *desc;
+  dev->mode.view.bpp = DLO_VIEW_BPP;
+  dev->mode.refresh  = dlo_mode_data[mode].refresh;
+  dev->low_blank     = dlo_mode_data[mode].low_blank;
 
   //DPRINTF("mode: select: %ux%u @ %u Hz %u bpp (base &%X base8 &%X low? %s)\n",
   //        dev->mode.view.width, dev->mode.view.height, dev->mode.refresh, dev->mode.view.bpp,

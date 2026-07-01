@@ -10,6 +10,12 @@ namespace picograph {
 
 namespace {
 
+#if defined(PICOGRAPH_DISPLAYLINK_16BPP) && PICOGRAPH_DISPLAYLINK_16BPP
+constexpr bool kSinglePlaneScanout = true;
+#else
+constexpr bool kSinglePlaneScanout = false;
+#endif
+
 constexpr bool kEnablePageFlipping = true;
 constexpr bool kEnableDirtyLineSkip = true;
 constexpr bool kEnableRleAwareDirtyCost = false;
@@ -105,17 +111,22 @@ unsigned DloDirtyDisplay::command_chunks(unsigned pixels) const
 
 unsigned DloDirtyDisplay::fill_run_bytes(unsigned pixels) const
 {
-    return 17u * command_chunks(pixels);
+    return (kSinglePlaneScanout ? 9u : 17u) * command_chunks(pixels);
 }
 
 unsigned DloDirtyDisplay::copy_row_bytes(unsigned pixels) const
 {
-    return 18u * command_chunks(pixels);
+    return (kSinglePlaneScanout ? 9u : 18u) * command_chunks(pixels);
 }
 
 unsigned DloDirtyDisplay::raw_line_bytes(unsigned pixels) const
 {
-    return pixels ? (3u * pixels + 12u * command_chunks(pixels)) : 0u;
+    if (!pixels) {
+        return 0u;
+    }
+    return kSinglePlaneScanout ?
+           (2u * pixels + 6u * command_chunks(pixels)) :
+           (3u * pixels + 12u * command_chunks(pixels));
 }
 
 unsigned DloDirtyDisplay::line_transfer_bytes(const GCCOLOR *data, unsigned width, unsigned stop_bytes) const
@@ -156,8 +167,9 @@ unsigned DloDirtyDisplay::line_transfer_bytes(const GCCOLOR *data, unsigned widt
         unsigned raw8 = 6u + chunk;
         unsigned rle16 = 6u + (3u * runs16);
         unsigned rle8 = 6u + (2u * runs8);
-        total = cap_fill_bytes(total + std::min(raw16, rle16) + std::min(raw8, rle8),
-                               stop_bytes);
+        unsigned chunk_bytes = std::min(raw16, rle16) +
+                               (kSinglePlaneScanout ? 0u : std::min(raw8, rle8));
+        total = cap_fill_bytes(total + chunk_bytes, stop_bytes);
         if (stop_bytes != 0 && total > stop_bytes) {
             return total;
         }

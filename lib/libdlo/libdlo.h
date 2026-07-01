@@ -255,6 +255,22 @@ typedef enum
 typedef uint32_t dlo_col32_t;
 
 
+/** When non-zero, run the device in 16 bpp scanout mode (colour depth register 0x00 = 0x00)
+ *  and only ever write the RGB565 plane, instead of the default 24 bpp split-plane mode
+ *  which sends every pixel twice (16 bpp plane plus 8 bpp fine-detail plane).
+ */
+#ifndef DLO_16BPP_SCANOUT
+#define DLO_16BPP_SCANOUT 0
+#endif
+
+/** Colour depth (bits per pixel) of views/modes produced by this build of the library. */
+#if DLO_16BPP_SCANOUT
+#define DLO_VIEW_BPP (16)
+#else
+#define DLO_VIEW_BPP (24)
+#endif
+
+
 /** Return a 32 bpp colour number when given the three RGB components. */
 #define DLO_RGB(red,grn,blu) (dlo_col32_t)(((red) & 0xFF) | (((grn) & 0xFF) << 8) | (((blu) & 0xFF) << 16))
 

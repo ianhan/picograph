@@ -420,8 +420,11 @@ dlo_retcode_t dlo_grfx_init(const dlo_init_t flags)
 
   stripe16 = malloc(SCRAPE_MAX_PIXELS * sizeof(dlo_col16_t));
   NERR(stripe16);
-  stripe8  = malloc(SCRAPE_MAX_PIXELS * sizeof(dlo_col8_t));
-  NERR(stripe8);
+  if (!DLO_16BPP_SCANOUT)
+  {
+    stripe8 = malloc(SCRAPE_MAX_PIXELS * sizeof(dlo_col8_t));
+    NERR(stripe8);
+  }
 
   /* Initialise the default look-up table for 8 bpp in bgr323 format */
   for (red = 0; red < 8; red++)
@@ -471,8 +474,8 @@ dlo_retcode_t dlo_grfx_fill_rect(dlo_device_t * const dev, const dlo_area_t * co
   ASSERT(dev && area)
   ASSERT(area->view.width && area->view.height);
 
-  /* Only 24 bpp is supported */
-  if (area->view.bpp != 24)
+  /* Only the scanout colour depth of this build is supported */
+  if (area->view.bpp != DLO_VIEW_BPP)
     return dlo_err_bad_col;
 
   /* Compute some useful values */
@@ -501,8 +504,8 @@ dlo_retcode_t dlo_grfx_copy_rect(dlo_device_t * const dev, const dlo_area_t * co
   ASSERT(src_area->view.width == dest_area->view.width && src_area->view.height == dest_area->view.height);
   ASSERT(src_area->view.bpp == dest_area->view.bpp);
 
-  /* Only 24 bpp is supported */
-  if (src_area->view.bpp != 24)
+  /* Only the scanout colour depth of this build is supported */
+  if (src_area->view.bpp != DLO_VIEW_BPP)
     return dlo_err_bad_col;
 
   /* Quick exit if we're copying to and from the same location */
@@ -567,8 +570,8 @@ dlo_retcode_t dlo_grfx_copy_host_bmp(dlo_device_t * const dev, const dlo_bmpflag
   ASSERT(fbuf->width && fbuf->height && fbuf->base && fbuf->stride);
   ASSERT(fbuf->width == area->view.width && fbuf->height == area->view.height)
 
-  /* Only 24 bpp is supported */
-  if (area->view.bpp != 24)
+  /* Only the scanout colour depth of this build is supported */
+  if (area->view.bpp != DLO_VIEW_BPP)
     return dlo_err_bad_col;
 
   /* Get a pixel reading function pointer for the fbuf */
@@ -657,7 +660,8 @@ static dlo_retcode_t hline_24bpp(dlo_device_t * const dev, dlo_ptr_t base16, dlo
   if (len < 256)
   {
     ERR(cmd_hline16(dev, base16, len, col16));
-    ERR(cmd_hline8( dev, base8,  len, col8));
+    if (!DLO_16BPP_SCANOUT)
+      ERR(cmd_hline8(dev, base8, len, col8));
   }
   else
   {
@@ -668,13 +672,15 @@ static dlo_retcode_t hline_24bpp(dlo_device_t * const dev, dlo_ptr_t base16, dlo
     for (; base16 < roff16; base16 += BYTES_PER_16BPP * 256)
     {
       ERR(cmd_hline16(dev, base16, 0, col16));
-      ERR(cmd_hline8( dev, base8,  0, col8));
+      if (!DLO_16BPP_SCANOUT)
+        ERR(cmd_hline8(dev, base8, 0, col8));
       base8 += BYTES_PER_8BPP * 256;
     }
     if (rem)
     {
       ERR(cmd_hline16(dev, roff16, rem, col16));
-      ERR(cmd_hline8( dev, roff8,  rem, col8));
+      if (!DLO_16BPP_SCANOUT)
+        ERR(cmd_hline8(dev, roff8, rem, col8));
     }
   }
   return dlo_ok;
@@ -693,7 +699,8 @@ static dlo_retcode_t copy_24bpp(dlo_device_t * const dev, dlo_ptr_t src_base16, 
   if (len < 256)
   {
     ERR(cmd_copy16(dev, src_base16, len, dest_base16));
-    ERR(cmd_copy8( dev, src_base8,  len, dest_base8));
+    if (!DLO_16BPP_SCANOUT)
+      ERR(cmd_copy8(dev, src_base8, len, dest_base8));
   }
   else
   {
@@ -706,7 +713,8 @@ static dlo_retcode_t copy_24bpp(dlo_device_t * const dev, dlo_ptr_t src_base16, 
     for (; src_base16 < src_roff16; src_base16 += BYTES_PER_16BPP * 256)
     {
       ERR(cmd_copy16(dev, src_base16, 0, dest_base16));
-      ERR(cmd_copy8( dev, src_base8,  0, dest_base8));
+      if (!DLO_16BPP_SCANOUT)
+        ERR(cmd_copy8(dev, src_base8, 0, dest_base8));
       dest_base16 += BYTES_PER_16BPP * 256;
       src_base8   += BYTES_PER_8BPP  * 256;
       dest_base8  += BYTES_PER_8BPP  * 256;
@@ -714,7 +722,8 @@ static dlo_retcode_t copy_24bpp(dlo_device_t * const dev, dlo_ptr_t src_base16, 
     if (rem)
     {
       ERR(cmd_copy16(dev, src_roff16, rem, dest_roff16));
-      ERR(cmd_copy8( dev, src_roff8,  rem, dest_roff8));
+      if (!DLO_16BPP_SCANOUT)
+        ERR(cmd_copy8(dev, src_roff8, rem, dest_roff8));
     }
   }
   return dlo_ok;
@@ -740,7 +749,8 @@ static dlo_retcode_t scrape_24bpp(dlo_device_t * const dev, const read_pixel_t r
       dlo_col32_t col = rdpx(src_base, swap);
 
       *ptr_col16++ = rgb16(col);
-      *ptr_col8++  = rgb8(col);
+      if (!DLO_16BPP_SCANOUT)
+        *ptr_col8++ = rgb8(col);
     }
   }
   return cmd_stripe24(dev, dest_base16, dest_base8, width);
@@ -792,7 +802,8 @@ static dlo_retcode_t cmd_stripe24_rgbx8888(dlo_device_t * const dev, const uint8
       dlo_col32_t col = RD_L(src);
 
       stripe16[pix] = rgbx8888_to_rgb565(col);
-      stripe8[pix] = rgbx8888_to_rgb323(col);
+      if (!DLO_16BPP_SCANOUT)
+        stripe8[pix] = rgbx8888_to_rgb323(col);
       src += sizeof(uint32_t);
     }
 
@@ -814,24 +825,29 @@ static dlo_retcode_t cmd_stripe24_chunk(dlo_device_t * const dev,
 {
 #if DLO_ENABLE_HOST_UPLOAD_RLE
   size_t runs16 = count_runs16(pixels16, width);
-  size_t runs8  = count_runs8(pixels8, width);
   size_t raw16  = DSIZEOF(WRITE_RAW16) + 4u + (BYTES_PER_16BPP * width);
-  size_t raw8   = DSIZEOF(WRITE_RAW8) + 4u + (BYTES_PER_8BPP * width);
   size_t rle16  = DSIZEOF(WRITE_RL16) + 4u + (3u * runs16);
-  size_t rle8   = DSIZEOF(WRITE_RL8) + 4u + (2u * runs8);
 
   if (rle16 <= raw16)
     ERR(cmd_rle16(dev, base16, pixels16, width, runs16));
   else
     ERR(cmd_raw16(dev, base16, pixels16, width));
 
-  if (rle8 <= raw8)
-    ERR(cmd_rle8(dev, base8, pixels8, width, runs8));
-  else
-    ERR(cmd_raw8(dev, base8, pixels8, width));
+  if (!DLO_16BPP_SCANOUT)
+  {
+    size_t runs8 = count_runs8(pixels8, width);
+    size_t raw8  = DSIZEOF(WRITE_RAW8) + 4u + (BYTES_PER_8BPP * width);
+    size_t rle8  = DSIZEOF(WRITE_RL8) + 4u + (2u * runs8);
+
+    if (rle8 <= raw8)
+      ERR(cmd_rle8(dev, base8, pixels8, width, runs8));
+    else
+      ERR(cmd_raw8(dev, base8, pixels8, width));
+  }
 #else
   ERR(cmd_raw16(dev, base16, pixels16, width));
-  ERR(cmd_raw8(dev, base8, pixels8, width));
+  if (!DLO_16BPP_SCANOUT)
+    ERR(cmd_raw8(dev, base8, pixels8, width));
 #endif
 
   return dlo_ok;
