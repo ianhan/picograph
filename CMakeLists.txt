@@ -35,6 +35,7 @@ endif()
 set(PICOGRAPH_DISPLAYLINK_WIDTH "${PICOGRAPH_DISPLAYLINK_WIDTH_DEFAULT}" CACHE STRING "DisplayLink output mode width")
 set(PICOGRAPH_DISPLAYLINK_HEIGHT "${PICOGRAPH_DISPLAYLINK_HEIGHT_DEFAULT}" CACHE STRING "DisplayLink output mode height")
 set(PICOGRAPH_DISPLAYLINK_REFRESH "${PICOGRAPH_DISPLAYLINK_REFRESH_DEFAULT}" CACHE STRING "DisplayLink output mode refresh rate")
+set(PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE "65472" CACHE STRING "DisplayLink USB command buffer size")
 set(PICOGRAPH_MONOCHROME_DISPLAY_COLOR "GREEN" CACHE STRING "Monochrome display color: WHITE, GREEN, AMBER")
 set(PICOGRAPH_EGA_MEMORY_KB "256" CACHE STRING "EGA memory size: 64, 128, 256")
 set(PICOGRAPH_EGA_MONITOR_TYPE "COLOR_ECD" CACHE STRING "EGA monitor type: COLOR_40, COLOR_80, COLOR_ECD, MONO")
@@ -96,8 +97,17 @@ if(PICOGRAPH_ENABLE_DISPLAYLINK)
         message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires lib/libdlo")
     endif()
     add_subdirectory(lib/libdlo)
-    if(TARGET libdlo AND NOT TARGET tinyusb_libdlo)
-        add_library(tinyusb_libdlo ALIAS libdlo)
+    if(TARGET libdlo AND NOT TARGET tusb_libdlo)
+        add_library(tusb_libdlo ALIAS libdlo)
+    endif()
+    if(TARGET libdlo)
+        target_compile_definitions(libdlo INTERFACE
+            DLO_USB_COMMAND_BUFFER_SIZE=${PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE}
+        )
+    else()
+        target_compile_definitions(tusb_libdlo INTERFACE
+            DLO_USB_COMMAND_BUFFER_SIZE=${PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE}
+        )
     endif()
 endif()
 
@@ -202,7 +212,7 @@ else()
 endif()
 
 if(PICOGRAPH_ENABLE_DISPLAYLINK)
-    target_link_libraries(picograph tinyusb_libdlo)
+    target_link_libraries(picograph tusb_libdlo)
     target_compile_definitions(picograph PRIVATE
         PICOGRAPH_ENABLE_DISPLAYLINK=1
         PICOGRAPH_DISPLAYLINK_WIDTH=${PICOGRAPH_DISPLAYLINK_WIDTH}

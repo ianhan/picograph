@@ -146,10 +146,23 @@ static inline uint16_t dlo_rd_u16_unaligned(const void *ptr)
 #define FORMAT_TO_BYTES_PER_PIXEL(fmt) ((unsigned int)fmt > 1023u ? 1 : ((fmt) & DLO_PIXFMT_BYPP_MSK) >> DLO_PIXFMT_BYPP_SFT)
 
 /** Default buffer size for sending commands to the device. */
-#define BUF_SIZE (1023*64u)
+#ifndef DLO_USB_COMMAND_BUFFER_SIZE
+#define DLO_USB_COMMAND_BUFFER_SIZE (16u * 1024u)
+#endif
 
 /** Threshold (bytes away from being full) for flushing the command buffer before adding any more commands to it. */
-#define BUF_HIGH_WATER_MARK (1*1024u)
+#ifndef DLO_USB_COMMAND_BUFFER_HIGH_WATER_MARK
+#define DLO_USB_COMMAND_BUFFER_HIGH_WATER_MARK (1u * 1024u)
+#endif
+
+#if DLO_USB_COMMAND_BUFFER_SIZE <= DLO_USB_COMMAND_BUFFER_HIGH_WATER_MARK
+#error "DLO_USB_COMMAND_BUFFER_SIZE must be larger than DLO_USB_COMMAND_BUFFER_HIGH_WATER_MARK"
+#endif
+
+#define BUF_SIZE DLO_USB_COMMAND_BUFFER_SIZE
+
+/** Threshold (bytes away from being full) for flushing the command buffer before adding any more commands to it. */
+#define BUF_HIGH_WATER_MARK DLO_USB_COMMAND_BUFFER_HIGH_WATER_MARK
 
 /** A 16 bits per pixel colour number (not normally used outside libdlo). */
 typedef uint16_t dlo_col16_t;
