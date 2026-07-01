@@ -211,9 +211,11 @@ struct dlo_device_s
   bool           check;      /**< Flag is toggled for each enumeration to spot dead nodes in device list. */
   uint32_t       timeout;    /**< Timeout for bulk communications (milliseconds). */
   uint32_t       memory;     /**< Total size of storage in the device (bytes). */
-  char          *buffer;     /**< Pointer to the base of the command buffer. */
+  char          *buffer;     /**< Pointer to the base of the command buffer currently being filled. */
   char          *bufptr;     /**< Pointer to the first free byte in the command buffer. */
   char          *bufend;     /**< Pointer to the byte after the end byte of the command buffer. */
+  char          *buffers[2]; /**< Ping-pong command buffers (two halves of one allocation). */
+  uint8_t        buf_index;  /**< Index into @a buffers of the buffer currently being filled. */
   dlo_usb_dev_t *cnct;       /**< Private word for connection specific data or structure pointer. */
   dlo_mode_t     mode;       /**< Current display mode information. */
   dlo_ptr_t      base8;      /**< Pointer to the base of the 8bpp segment (if any). */

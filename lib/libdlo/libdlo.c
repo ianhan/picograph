@@ -957,6 +957,11 @@ dlo_device_t *dlo_new_device(const dlo_devtype_t type, const char * const serial
 
   /* Device-dependent attributes */
   dev->buffer = NULL;
+  dev->bufptr = NULL;
+  dev->bufend = NULL;
+  dev->buffers[0] = NULL;
+  dev->buffers[1] = NULL;
+  dev->buf_index = 0;
 
   /* Connection-dependent attributes.
    *

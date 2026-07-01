@@ -62,6 +62,16 @@
 /** Largest full-speed bulk transfer that fits TinyUSB's uint16_t HCD length. */
 #define WRITE_MAX_XFER_BYTES (1023u * 64u)
 
+/** Number of ping-pong command buffers used to overlap encoding with bulk transfers. */
+#define CMD_BUF_COUNT (2u)
+
+/** Usable size of each ping-pong command buffer (halves of the BUF_SIZE allocation). */
+#define CMD_BUF_BYTES (BUF_SIZE / CMD_BUF_COUNT)
+
+#if CMD_BUF_BYTES <= DLO_USB_COMMAND_BUFFER_HIGH_WATER_MARK
+#error "Each ping-pong command buffer must be larger than the high water mark"
+#endif
+
 /** Byte sequence to send to the device to select the default communication channel.
  */
 #define STD_CHANNEL "\x57\xCD\xDC\xA7\x1C\x88\x5E\x15\x60\xFE\xC6\x97\x16\x3D\x47\xF2"
@@ -94,6 +104,10 @@ static char *usb_err_str = NULL;
  *  @return  Return code, zero for no error.
  */
 static dlo_retcode_t read_edid(dlo_device_t * const dev);
+
+
+/** Spin until the device's bulk endpoint has no transfer in flight, servicing the USB stack. */
+static void dlo_usb_wait_idle(const dlo_device_t * const dev);
 
 
 
@@ -450,14 +464,17 @@ dlo_retcode_t dlo_usb_open(dlo_device_t * const dev)
   /* Mark the device as claimed */
   dev->claimed = true;
 
-  /* Allocate a buffer to hold commands before they are sent to the device */
-  if (!dev->buffer)
+  /* Allocate the ping-pong command buffers (two halves of one allocation) */
+  if (!dev->buffers[0])
   {
     //DPRINTF("usb: open: alloc buffer...\n");
-    dev->buffer = dlo_malloc(BUF_SIZE);
-    NERR(dev->buffer);
+    dev->buffers[0] = dlo_malloc(BUF_SIZE);
+    NERR(dev->buffers[0]);
+    dev->buffers[1] = dev->buffers[0] + CMD_BUF_BYTES;
+    dev->buf_index = 0;
+    dev->buffer = dev->buffers[0];
     dev->bufptr = dev->buffer;
-    dev->bufend = dev->buffer + BUF_SIZE;
+    dev->bufend = dev->buffer + CMD_BUF_BYTES;
   }
   //DPRINTF("usb: open: buffer &%X, &%X, &%X\n", (int)dev->buffer, (int)dev->bufptr, (int)dev->bufend);
 
@@ -484,9 +501,15 @@ dlo_retcode_t dlo_usb_close(dlo_device_t * const dev)
 {
   if (dev->claimed)
   {
-    if (dev->buffer)
+    if (dev->buffers[0])
     {
-      dlo_free(dev->buffer);
+      /* A transfer may still be reading the buffers; let it finish before freeing */
+      if (dev->cnct && dev->cnct->uhand && tuh_mounted(dev->cnct->udev))
+        dlo_usb_wait_idle(dev);
+      dlo_free(dev->buffers[0]);
+      dev->buffers[0] = NULL;
+      dev->buffers[1] = NULL;
+      dev->buf_index = 0;
       dev->buffer = NULL;
       dev->bufptr = NULL;
       dev->bufend = NULL;
@@ -500,6 +523,10 @@ dlo_retcode_t dlo_usb_close(dlo_device_t * const dev)
 dlo_retcode_t dlo_usb_chan_sel(const dlo_device_t * const dev, const char * const buf, const size_t size)
 {
   if (size) {
+        /* A channel/key change must not land while a bulk transfer is on the wire */
+        if (dev->cnct && dev->cnct->uhand)
+          dlo_usb_wait_idle(dev);
+
         tusb_control_request_t const request = {
             .bmRequestType_bit = {
             .recipient = TUSB_REQ_RCPT_DEVICE,
@@ -538,28 +565,23 @@ dlo_retcode_t dlo_usb_std_chan(const dlo_device_t * const dev)
 }
 
 
-dlo_retcode_t dlo_usb_write(dlo_device_t * const dev)
-{
-  dlo_retcode_t err = dlo_usb_write_buf(dev, dev->buffer, dev->bufptr - dev->buffer);
-
-  dev->bufptr = dev->buffer;
-
-  return err;
-}
-
-dlo_retcode_t dlo_usb_discard(dlo_device_t * const dev)
-{
-  if (!dev)
-    return dlo_err_bad_device;
-
-  dev->bufptr = dev->buffer;
-  return dlo_ok;
-}
-
-
 void dlo_xfer_cb(tuh_xfer_t* xfer) {}
 
-dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t size)
+/** Spin until the device's bulk endpoint has no transfer in flight, servicing the USB stack. */
+static void dlo_usb_wait_idle(const dlo_device_t * const dev)
+{
+  while (usbh_edpt_busy(dev->cnct->udev, dev->cnct->uhand)) {
+    tuh_task();
+  }
+}
+
+/** Submit a buffer as one or more bulk transfers.
+ *
+ *  Each submission first waits for the previous transfer to complete, so commands
+ *  always reach the device in order. The final transfer is left in flight: the
+ *  caller must not modify or free @a buf until the endpoint is idle again.
+ */
+static dlo_retcode_t dlo_usb_write_buf_async(dlo_device_t * const dev, char * buf, size_t size)
 {
 #ifdef DEBUG_DUMP
   static char     outfile[64];
@@ -572,24 +594,6 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
 
   if (!size)
     return dlo_ok;
-
-#ifdef WRITE_BUF_BODGE
-  /* If the buffer to write is fewer than 513 bytes in size, copy into 513 byte buffer and pad with zeros */
-  if (size < WRITE_BUF_BODGE)
-  {
-    dlo_retcode_t err;
-    uint32_t       rem = WRITE_BUF_BODGE - size;
-    char          *cpy = dlo_malloc(WRITE_BUF_BODGE);
-
-    NERR(cpy);
-    dlo_memcpy(cpy, buf, size);
-    dlo_memset(cpy + size, 0, rem);
-    err = dlo_usb_write_buf(dev, cpy, size + rem);
-    dlo_free(cpy);
-
-    return err;
-  }
-#endif
 
   while (size)
   {
@@ -607,6 +611,9 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
     }
 #endif
 
+    /* The previous transfer (or previous chunk of this one) must finish first */
+    dlo_usb_wait_idle(dev);
+
     tuh_xfer_t xfer =
     {
       .daddr       = dev->cnct->udev,
@@ -617,19 +624,74 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
       .user_data   = 0
     };
 
-    // submit transfer for this EP
     if (!tuh_edpt_xfer(&xfer))
       return dlo_err_usb;
-
-    // actually synchronous please
-    while (usbh_edpt_busy(dev->cnct->udev, dev->cnct->uhand)) {
-      tuh_task();
-    }
 
     buf  += num;
     size -= num;
   }
   return dlo_ok;
+}
+
+dlo_retcode_t dlo_usb_write(dlo_device_t * const dev)
+{
+  if (!dev->buffer)
+    return dlo_ok;
+
+  size_t size = dev->bufptr - dev->buffer;
+  dlo_retcode_t err = dlo_usb_write_buf_async(dev, dev->buffer, size);
+
+  /* Flip to the other command buffer so encoding can continue while the
+   * submitted buffer is still on the wire. On error nothing was left in
+   * flight, so the current buffer is simply reset and reused.
+   */
+  if (err == dlo_ok && size)
+    dev->buf_index ^= 1u;
+
+  dev->buffer = dev->buffers[dev->buf_index];
+  dev->bufptr = dev->buffer;
+  dev->bufend = dev->buffer + CMD_BUF_BYTES;
+
+  return err;
+}
+
+dlo_retcode_t dlo_usb_discard(dlo_device_t * const dev)
+{
+  if (!dev)
+    return dlo_err_bad_device;
+
+  dev->bufptr = dev->buffer;
+  return dlo_ok;
+}
+
+
+dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t size)
+{
+#ifdef WRITE_BUF_BODGE
+  /* If the buffer to write is fewer than 513 bytes in size, copy into 513 byte buffer and pad with zeros */
+  if (size && size < WRITE_BUF_BODGE)
+  {
+    dlo_retcode_t err;
+    uint32_t       rem = WRITE_BUF_BODGE - size;
+    char          *cpy = dlo_malloc(WRITE_BUF_BODGE);
+
+    NERR(cpy);
+    dlo_memcpy(cpy, buf, size);
+    dlo_memset(cpy + size, 0, rem);
+    err = dlo_usb_write_buf(dev, cpy, size + rem);
+    dlo_free(cpy);
+
+    return err;
+  }
+#endif
+
+  dlo_retcode_t err = dlo_usb_write_buf_async(dev, buf, size);
+
+  /* The caller owns buf, so the transfer must complete before returning */
+  if (err == dlo_ok && size)
+    dlo_usb_wait_idle(dev);
+
+  return err;
 }
 
 
