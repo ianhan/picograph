@@ -1,5 +1,6 @@
 #include "picograph/module.h"
 
+#include "framework/scanout_shared.h"
 #include "modules/dlodirty.h"
 #include "pcem_cl5429_bios_rom.h"
 
@@ -40,12 +41,9 @@ constexpr unsigned kMaxVgaWidth = 1024;
 constexpr unsigned kMaxVgaLines = 512;
 constexpr uint32_t kVgaPixelClock0Hz = 25175000u;
 constexpr uint32_t kVgaPixelClock1Hz = 28322000u;
-constexpr unsigned kTimingFracBits = 16;
-constexpr uint64_t kTimingOne = 1ull << kTimingFracBits;
-constexpr unsigned kMaxPollStepsPerTick = 2048;
-constexpr int kDirtyUnmapped = -1;
-constexpr int kDirtyNoVisibleChange = 0;
-constexpr int kDirtyMapped = 1;
+using scanout::kDirtyUnmapped;
+using scanout::kDirtyNoVisibleChange;
+using scanout::kDirtyMapped;
 
 constexpr uint8_t kClTypeGd5429 = 3;
 constexpr uint8_t kClGd5429IsaBus = 7;
@@ -151,8 +149,7 @@ uint8_t edatlookup[4][4];
 GCCOLOR pallook256[256];
 GCCOLOR line_buffer[kMaxVgaWidth];
 DloDirtyDisplay display;
-volatile uint32_t timing_recalc_requests;
-uint32_t handled_timing_recalc_requests;
+scanout::DeferredTiming deferred_timing;
 
 int xsize = 1;
 int ysize = 1;
@@ -162,37 +159,9 @@ GCCOLOR makecol(uint8_t r, uint8_t g, uint8_t b)
     return RGB(r, g, b);
 }
 
-uint64_t vga_time_from_chars(int chars, uint32_t pixel_clock_hz, unsigned char_width)
-{
-    if (chars <= 0) {
-        return 0;
-    }
 
-    uint64_t numerator = (uint64_t)chars * char_width * 1000000ull * kTimingOne;
-    return numerator / pixel_clock_hz;
-}
 
-uint32_t vga_delay_us(Vga *e, uint64_t delay)
-{
-    uint32_t us = (uint32_t)(delay >> kTimingFracBits);
-    uint32_t frac = (uint32_t)(delay & (kTimingOne - 1u));
-    uint32_t old_frac = e->timer_frac;
-    e->timer_frac = (old_frac + frac) & (uint32_t)(kTimingOne - 1u);
-    if (old_frac + frac >= kTimingOne) {
-        ++us;
-    }
-    return us ? us : 1;
-}
 
-uint64_t load_dispontime(const Vga *e)
-{
-    return __atomic_load_n(&e->dispontime, __ATOMIC_ACQUIRE);
-}
-
-uint64_t load_dispofftime(const Vga *e)
-{
-    return __atomic_load_n(&e->dispofftime, __ATOMIC_ACQUIRE);
-}
 
 void vga_recalctimings(Vga *e);
 
@@ -213,7 +182,7 @@ uint32_t display_line_dirty_version(unsigned line)
 
 void __time_critical_func(request_timing_recalc)()
 {
-    __atomic_fetch_add(&timing_recalc_requests, 1u, __ATOMIC_RELEASE);
+    scanout::request_timing_recalc(deferred_timing);
 }
 
 bool cl_packed_linear(const Vga *e)
@@ -257,11 +226,7 @@ uint32_t cl_banked_offset(uint32_t address)
 
 void handle_deferred_requests()
 {
-    uint32_t timing_requests = __atomic_load_n(&timing_recalc_requests, __ATOMIC_ACQUIRE);
-    if (timing_requests != handled_timing_recalc_requests) {
-        vga_recalctimings(&vga);
-        handled_timing_recalc_requests = timing_requests;
-    }
+    scanout::handle_deferred_requests(deferred_timing, [] { vga_recalctimings(&vga); });
 }
 
 void vga_recalctimings(Vga *e)
@@ -337,8 +302,8 @@ void vga_recalctimings(Vga *e)
     }
     int dispofftime = disptime - dispontime;
     unsigned char_width = (e->seqregs[1] & 1) ? 8u : 9u;
-    __atomic_store_n(&e->dispontime, vga_time_from_chars(dispontime, hz, char_width), __ATOMIC_RELEASE);
-    __atomic_store_n(&e->dispofftime, vga_time_from_chars(dispofftime, hz, char_width), __ATOMIC_RELEASE);
+    __atomic_store_n(&e->dispontime, scanout::time_from_chars(dispontime, hz, char_width), __ATOMIC_RELEASE);
+    __atomic_store_n(&e->dispofftime, scanout::time_from_chars(dispofftime, hz, char_width), __ATOMIC_RELEASE);
 }
 
 void __time_critical_func(refresh_active_palette)(Vga *e)
@@ -362,32 +327,22 @@ void __time_critical_func(rebuild_egapal)(Vga *e)
 
 inline uint8_t __time_critical_func(vram_load)(uint32_t addr)
 {
-    return __atomic_load_n(&vga.vram[addr & vga.vrammask], __ATOMIC_RELAXED);
+    return scanout::vram_load(vga, addr);
 }
 
 inline void __time_critical_func(vram_store)(uint32_t addr, uint8_t val)
 {
-    __atomic_store_n(&vga.vram[addr & vga.vrammask], val, __ATOMIC_RELAXED);
+    scanout::vram_store(vga, addr, val);
 }
 
 inline bool __time_critical_func(vram_store_changed)(uint32_t addr, uint8_t val)
 {
-    uint32_t masked = addr & vga.vrammask;
-    uint8_t old = __atomic_load_n(&vga.vram[masked], __ATOMIC_RELAXED);
-    if (old == val) {
-        return false;
-    }
-    __atomic_store_n(&vga.vram[masked], val, __ATOMIC_RELAXED);
-    return true;
+    return scanout::vram_store_changed(vga, addr, val);
 }
 
 inline void __time_critical_func(vram_store_write)(uint32_t addr, uint8_t val, bool track_changes, bool *changed)
 {
-    if (track_changes) {
-        *changed |= vram_store_changed(addr, val);
-    } else {
-        vram_store(addr, val);
-    }
+    scanout::vram_store_write(vga, addr, val, track_changes, changed);
 }
 
 unsigned text_char_width(const Vga *e)
@@ -902,7 +857,7 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         if (e->displine > 500) {
             e->displine = 0;
         }
-        return vga_delay_us(e, load_dispofftime(e));
+        return scanout::delay_us(e, scanout::load_dispofftime(e));
     }
 
     if (e->dispon) {
@@ -980,25 +935,12 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
     if (e->sc == (e->crtc[10] & 31)) {
         e->con = 1;
     }
-    return vga_delay_us(e, load_dispontime(e));
+    return scanout::delay_us(e, scanout::load_dispontime(e));
 }
 
 void vga_advance_state(RenderContext *ctx)
 {
-    uint32_t now = time_us_32();
-    if (!vga.timing_started) {
-        vga.next_poll_us = now;
-        vga.timing_started = true;
-    }
-
-    unsigned steps = 0;
-    while ((int32_t)(now - vga.next_poll_us) >= 0 && steps < kMaxPollStepsPerTick) {
-        vga.next_poll_us += vga_poll(&vga, ctx);
-        ++steps;
-    }
-    if (steps == kMaxPollStepsPerTick && (int32_t)(now - vga.next_poll_us) > 0) {
-        vga.next_poll_us = now + 1;
-    }
+    scanout::advance_state(vga, ctx, vga_poll);
 }
 
 uint32_t __time_critical_func(normalize_vram_address)(uint32_t addr, int *readplane_or_mask)
@@ -1093,65 +1035,13 @@ bool __time_critical_func(vga_vram_active)(uint32_t address)
 
 int __time_critical_func(mark_text_cell_dirty)(uint32_t cell)
 {
-    if ((vga.gdcreg[6] & 1) || (vga.attrregs[0x10] & 1) || !vga.chain2_write ||
-        !display.frame_valid || display.source_height == 0 ||
-        display.vertical_scale == 0 || vga.hdisp <= 0 || vga.rowoffset <= 0 ||
-        display.first_line < 0 || display.first_line >= (int)kMaxVgaLines ||
-        vga.split <= vga.dispend) {
-        return kDirtyUnmapped;
-    }
-
-    unsigned visible_lines = display.source_height / display.vertical_scale;
-    unsigned char_height = (unsigned)(vga.crtc[9] & 31) + 1u;
-    if (visible_lines == 0) {
-        return kDirtyUnmapped;
-    }
-
-    uint32_t start_cell = ((uint32_t)vga.crtc[0x0c] << 8) | vga.crtc[0x0d];
-    uint32_t row_cells = (uint32_t)vga.rowoffset * 2u;
-    uint32_t visible_rows = (visible_lines + char_height - 1u) / char_height;
-    if (row_cells == 0 ||
-        start_cell >= 0x2000u ||
-        visible_rows > 0x2000u / row_cells ||
-        start_cell + visible_rows * row_cells > 0x2000u) {
-        return kDirtyUnmapped;
-    }
-
-    if (cell < start_cell) {
-        return kDirtyNoVisibleChange;
-    }
-
-    uint32_t relative = cell - start_cell;
-    uint32_t row = relative / row_cells;
-    uint32_t column = relative - row * row_cells;
-    if (column >= (uint32_t)vga.hdisp) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line_offset = row * char_height;
-    if (first_line_offset >= visible_lines) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line = (unsigned)display.first_line + first_line_offset;
-    unsigned end_offset = std::min<unsigned>(first_line_offset + char_height, visible_lines);
-    unsigned end_line = (unsigned)display.first_line + end_offset;
-    if (first_line >= kMaxVgaLines) {
-        return kDirtyNoVisibleChange;
-    }
-    end_line = std::min<unsigned>(end_line, kMaxVgaLines);
-    mark_display_line_range_dirty(first_line, end_line);
-    return kDirtyMapped;
+    bool mode_inactive = (vga.gdcreg[6] & 1) || (vga.attrregs[0x10] & 1);
+    return scanout::mark_text_cell_dirty(vga, display, kMaxVgaLines, mode_inactive, cell);
 }
 
 int __time_critical_func(mark_text_vram_write_dirty)(uint32_t address)
 {
-    uint32_t offset = (address >= 0xb0000) ? (address & 0x7fffu) : (address & 0xffffu);
-    if (offset & 0x4000u) {
-        return kDirtyUnmapped;
-    }
-
-    return mark_text_cell_dirty(offset >> 1);
+    return scanout::mark_text_vram_write_dirty(address, [](uint32_t cell) { return mark_text_cell_dirty(cell); });
 }
 
 void __time_critical_func(mark_cursor_cells_dirty)(uint32_t old_cell, uint32_t new_cell)
@@ -1223,58 +1113,9 @@ bool __time_critical_func(crtc_reg_affects_pixels)(uint8_t index)
 
 int __time_critical_func(mark_graphics_vram_write_dirty)(uint32_t address)
 {
-    if (!(vga.gdcreg[6] & 1) || vga.chain4 || vga.chain2_write || (vga.seqregs[1] & 4) ||
-        (vga.crtc[0x17] & 0x43) != 0x43 ||
-        !display.frame_valid || display.source_height == 0 ||
-        display.vertical_scale == 0 || vga.hdisp <= 0 || vga.rowoffset <= 0 ||
-        display.first_line < 0 || display.first_line >= (int)kMaxVgaLines ||
-        vga.split <= vga.dispend) {
-        return kDirtyUnmapped;
-    }
-
-    unsigned visible_lines = display.source_height / display.vertical_scale;
-    unsigned scanlines_per_row = (unsigned)(vga.crtc[9] & 31) + 1u;
-    if (visible_lines == 0) {
-        return kDirtyUnmapped;
-    }
-
-    uint32_t base = normalize_vram_address(address, nullptr) & ~3u;
-    uint32_t start_base = (((uint32_t)vga.crtc[0x0c] << 8) | vga.crtc[0x0d]) << 2;
-    uint32_t row_bytes = (uint32_t)vga.rowoffset << 3;
-    uint32_t visible_rows = (visible_lines + scanlines_per_row - 1u) / scanlines_per_row;
-    if (row_bytes == 0 ||
-        start_base >= vga.vram_limit ||
-        visible_rows > (vga.vram_limit - start_base) / row_bytes ||
-        base >= vga.vram_limit) {
-        return kDirtyUnmapped;
-    }
-
-    if (base < start_base) {
-        return kDirtyNoVisibleChange;
-    }
-
-    uint32_t relative = base - start_base;
-    uint32_t row = relative / row_bytes;
-    uint32_t row_offset = relative - row * row_bytes;
-    uint32_t visible_groups = (uint32_t)vga.hdisp + ((vga.scrollcache & 7) ? 1u : 0u);
-    if (visible_groups == 0 || row_offset / 4u >= visible_groups) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line_offset = row * scanlines_per_row;
-    if (first_line_offset >= visible_lines) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line = (unsigned)display.first_line + first_line_offset;
-    unsigned end_offset = std::min<unsigned>(first_line_offset + scanlines_per_row, visible_lines);
-    unsigned end_line = (unsigned)display.first_line + end_offset;
-    if (first_line >= kMaxVgaLines) {
-        return kDirtyNoVisibleChange;
-    }
-    end_line = std::min<unsigned>(end_line, kMaxVgaLines);
-    mark_display_line_range_dirty(first_line, end_line);
-    return kDirtyMapped;
+    bool mode_inactive = !(vga.gdcreg[6] & 1) || vga.chain4;
+    return scanout::mark_graphics_vram_write_dirty(vga, display, kMaxVgaLines, mode_inactive,
+                                                   [address] { return normalize_vram_address(address, nullptr); });
 }
 
 bool __time_critical_func(vga_write)(uint32_t addr, uint8_t val, bool track_changes)
@@ -2006,55 +1847,6 @@ void __time_critical_func(vga_out)(uint16_t addr, uint8_t val)
     }
 }
 
-// The scanline engine on core 0 advances in real time only while it gets CPU
-// time; during DisplayLink upload bursts it can stall for milliseconds with
-// the status register frozen mid-phase. Host timing loops key off 3da: id
-// Software's SyncVBL hunts for the vertical front porch (display disabled,
-// vsync inactive) with tight IN loops and treats a long reading of that
-// state as vertical blank, so a frozen blanking phase makes the game flip
-// and draw over the page still being scanned. When the engine is behind,
-// derive display-enable and vretrace from the wall clock instead of the
-// frozen state. Runs on core 1; the racy field reads can at worst produce
-// one odd sample, which persistence-checking host loops reject.
-uint8_t __time_critical_func(extrapolate_stat)(uint8_t stat)
-{
-#if !PICOGRAPH_REALTIME_STATUS
-    return stat;
-#endif
-    if (!vga.timing_started) {
-        return stat;
-    }
-    int32_t behind = (int32_t)(time_us_32() - vga.next_poll_us);
-    if (behind <= 0) {
-        return stat;
-    }
-
-    uint32_t blank_us = (uint32_t)(load_dispofftime(&vga) >> kTimingFracBits);
-    uint32_t active_us = (uint32_t)(load_dispontime(&vga) >> kTimingFracBits);
-    uint32_t line_us = blank_us + active_us;
-    uint32_t vtotal = (uint32_t)vga.vtotal;
-    if (line_us == 0 || vtotal == 0) {
-        return stat;
-    }
-
-    // next_poll_us is the deadline of the phase the engine is stuck in:
-    // linepos==1 means the blanking phase of the current line is ending,
-    // otherwise the active phase (end of line) is. Advance from there.
-    uint32_t pos = vga.linepos ? blank_us : line_us;
-    uint32_t total = pos + (uint32_t)behind;
-    uint32_t line = ((uint32_t)vga.vc + total / line_us) % vtotal;
-    uint32_t rem = total % line_us;
-
-    stat &= (uint8_t)~0x09u;
-    if (line >= (uint32_t)vga.dispend || rem < blank_us) {
-        stat |= 0x01;
-    }
-    uint32_t vsyncstart = (uint32_t)vga.vsyncstart;
-    if (line >= vsyncstart && line < vsyncstart + 4u) {
-        stat |= 0x08;
-    }
-    return stat;
-}
 
 uint8_t __time_critical_func(vga_in)(uint16_t addr)
 {
@@ -2123,7 +1915,7 @@ uint8_t __time_critical_func(vga_in)(uint16_t addr)
     case 0x3da:
         vga.attrff = 0;
         vga.stat ^= 0x30;
-        return extrapolate_stat(vga.stat);
+        return scanout::extrapolate_stat(vga, vga.stat);
     default:
         return 0xff;
     }
@@ -2155,34 +1947,23 @@ bool __time_critical_func(vga_mem_read)(uint32_t address, uint8_t *data)
 
 void __time_critical_func(vga_mem_write)(uint32_t address, uint8_t data)
 {
-    if (vga_vram_active(address)) {
-        if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
-            cl_mmio_write(address, data);
-            return;
-        }
-        bool full_dirty_pending = display.full_render_dirty_pending();
-        bool track_changes =
-            !full_dirty_pending &&
-            !display.content_dirty_pending();
-        uint32_t offset = cl_banked_offset(address);
-        bool changed = vga_write(offset, data, track_changes);
-        if (full_dirty_pending) {
-            return;
-        }
-        if (!track_changes || changed) {
-            request_display_dirty();
-        }
+    if (!vga_vram_active(address)) {
+        return;
     }
+    if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
+        cl_mmio_write(address, data);
+        return;
+    }
+    uint32_t offset = cl_banked_offset(address);
+    scanout::mem_write(display, offset, data,
+                       [](uint32_t a, uint8_t d, bool track) { return vga_write(a, d, track); },
+                       [](uint32_t) { return kDirtyUnmapped; },
+                       [](uint32_t) { return kDirtyUnmapped; });
 }
 
 bool __time_critical_func(vga_rom_read)(uint32_t address, uint8_t *data)
 {
-    if (address < kVgaRomBase || address >= kVgaRomBase + kVgaRomSize) {
-        return false;
-    }
-    uint32_t offset = address - kVgaRomBase;
-    *data = (offset < kVgaRomImageSize) ? kPcemCl5429BiosRom[offset] : 0xff;
-    return true;
+    return scanout::rom_read(address, kVgaRomBase, kVgaRomSize, kPcemCl5429BiosRom, kVgaRomImageSize, data);
 }
 
 void build_tables()
@@ -2230,8 +2011,8 @@ void init()
     std::memset(&vga, 0, sizeof(vga));
     std::memset(line_buffer, 0, sizeof(line_buffer));
     display.reset(kMaxVgaWidth, kMaxVgaLines, line_buffer, "cl5429");
-    handled_timing_recalc_requests = 0;
-    __atomic_store_n(&timing_recalc_requests, 0u, __ATOMIC_RELEASE);
+    deferred_timing.handled = 0;
+    __atomic_store_n(&deferred_timing.requested, 0u, __ATOMIC_RELEASE);
     build_tables();
 
     vga.pallook = pallook256;
@@ -2275,16 +2056,9 @@ void init()
 
 void tick()
 {
-    PGC pGC = GCDisplay();
-    RenderContext ctx = {pGC, false, false};
-    RenderContext *pCtx = (pGC && pGC->bitmap.handle && GCWidth(pGC) > 0 && GCHeight(pGC) > 0) ? &ctx : nullptr;
-    handle_deferred_requests();
-    vga_advance_state(pCtx);
-
-    if (ctx.access_open) {
-        display.end_access(&ctx);
-    }
-    display.present_pending(pGC);
+    scanout::tick(display,
+                  [] { handle_deferred_requests(); },
+                  [](RenderContext *ctx) { vga_advance_state(ctx); });
 }
 
 IoTrap io_traps[] = {

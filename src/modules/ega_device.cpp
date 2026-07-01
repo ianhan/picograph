@@ -1,5 +1,6 @@
 #include "picograph/module.h"
 
+#include "framework/scanout_shared.h"
 #include "modules/dlodirty.h"
 #include "pcem_ega_bios_rom.h"
 
@@ -44,12 +45,9 @@ constexpr unsigned kMaxEgaWidth = 1024;
 constexpr unsigned kMaxEgaLines = 512;
 constexpr uint32_t kCgaCharClockHz = 1789773u;
 constexpr uint32_t kMdaCharClockHz = 2032125u;
-constexpr unsigned kTimingFracBits = 16;
-constexpr uint64_t kTimingOne = 1ull << kTimingFracBits;
-constexpr unsigned kMaxPollStepsPerTick = 2048;
-constexpr int kDirtyUnmapped = -1;
-constexpr int kDirtyNoVisibleChange = 0;
-constexpr int kDirtyMapped = 1;
+using scanout::kDirtyUnmapped;
+using scanout::kDirtyNoVisibleChange;
+using scanout::kDirtyMapped;
 
 constexpr int kDisplayGreen = 3;
 constexpr int kDisplayAmber = 4;
@@ -128,8 +126,7 @@ GCCOLOR pallook16[256];
 GCCOLOR pallook64[256];
 GCCOLOR line_buffer[kMaxEgaWidth];
 DloDirtyDisplay display;
-volatile uint32_t timing_recalc_requests;
-uint32_t handled_timing_recalc_requests;
+scanout::DeferredTiming deferred_timing;
 
 int egaswitchread;
 int egaswitches;
@@ -169,42 +166,9 @@ GCCOLOR ega_mono_color(uint8_t c)
     }
 }
 
-uint64_t ega_time_from_chars(int chars, uint32_t hz, bool nine_dot_chars)
-{
-    if (chars <= 0) {
-        return 0;
-    }
 
-    uint64_t numerator = (uint64_t)chars * 1000000ull * kTimingOne;
-    uint64_t denominator = hz;
-    if (nine_dot_chars) {
-        numerator *= 9u;
-        denominator *= 8u;
-    }
-    return numerator / denominator;
-}
 
-uint32_t ega_delay_us(Ega *e, uint64_t delay)
-{
-    uint32_t us = (uint32_t)(delay >> kTimingFracBits);
-    uint32_t frac = (uint32_t)(delay & (kTimingOne - 1u));
-    uint32_t old_frac = e->timer_frac;
-    e->timer_frac = (old_frac + frac) & (uint32_t)(kTimingOne - 1u);
-    if (old_frac + frac >= kTimingOne) {
-        ++us;
-    }
-    return us ? us : 1;
-}
 
-uint64_t load_dispontime(const Ega *e)
-{
-    return __atomic_load_n(&e->dispontime, __ATOMIC_ACQUIRE);
-}
-
-uint64_t load_dispofftime(const Ega *e)
-{
-    return __atomic_load_n(&e->dispofftime, __ATOMIC_ACQUIRE);
-}
 
 void ega_recalctimings(Ega *e);
 
@@ -225,16 +189,12 @@ uint32_t display_line_dirty_version(unsigned line)
 
 void __time_critical_func(request_timing_recalc)()
 {
-    __atomic_fetch_add(&timing_recalc_requests, 1u, __ATOMIC_RELEASE);
+    scanout::request_timing_recalc(deferred_timing);
 }
 
 void handle_deferred_requests()
 {
-    uint32_t timing_requests = __atomic_load_n(&timing_recalc_requests, __ATOMIC_ACQUIRE);
-    if (timing_requests != handled_timing_recalc_requests) {
-        ega_recalctimings(&ega);
-        handled_timing_recalc_requests = timing_requests;
-    }
+    scanout::handle_deferred_requests(deferred_timing, [] { ega_recalctimings(&ega); });
 }
 
 void ega_recalctimings(Ega *e)
@@ -271,9 +231,9 @@ void ega_recalctimings(Ega *e)
         dispontime *= 2;
     }
     int dispofftime = disptime - dispontime;
-    bool nine_dot_chars = !(e->seqregs[1] & 1);
-    __atomic_store_n(&e->dispontime, ega_time_from_chars(dispontime, hz, nine_dot_chars), __ATOMIC_RELEASE);
-    __atomic_store_n(&e->dispofftime, ega_time_from_chars(dispofftime, hz, nine_dot_chars), __ATOMIC_RELEASE);
+    unsigned char_width = (e->seqregs[1] & 1) ? 8u : 9u;
+    __atomic_store_n(&e->dispontime, scanout::time_from_chars(dispontime, hz * 8u, char_width), __ATOMIC_RELEASE);
+    __atomic_store_n(&e->dispofftime, scanout::time_from_chars(dispofftime, hz * 8u, char_width), __ATOMIC_RELEASE);
 }
 
 void __time_critical_func(refresh_active_palette)(Ega *e)
@@ -297,32 +257,22 @@ void __time_critical_func(rebuild_egapal)(Ega *e)
 
 inline uint8_t __time_critical_func(vram_load)(uint32_t addr)
 {
-    return __atomic_load_n(&ega.vram[addr & ega.vrammask], __ATOMIC_RELAXED);
+    return scanout::vram_load(ega, addr);
 }
 
 inline void __time_critical_func(vram_store)(uint32_t addr, uint8_t val)
 {
-    __atomic_store_n(&ega.vram[addr & ega.vrammask], val, __ATOMIC_RELAXED);
+    scanout::vram_store(ega, addr, val);
 }
 
 inline bool __time_critical_func(vram_store_changed)(uint32_t addr, uint8_t val)
 {
-    uint32_t masked = addr & ega.vrammask;
-    uint8_t old = __atomic_load_n(&ega.vram[masked], __ATOMIC_RELAXED);
-    if (old == val) {
-        return false;
-    }
-    __atomic_store_n(&ega.vram[masked], val, __ATOMIC_RELAXED);
-    return true;
+    return scanout::vram_store_changed(ega, addr, val);
 }
 
 inline void __time_critical_func(vram_store_write)(uint32_t addr, uint8_t val, bool track_changes, bool *changed)
 {
-    if (track_changes) {
-        *changed |= vram_store_changed(addr, val);
-    } else {
-        vram_store(addr, val);
-    }
+    scanout::vram_store_write(ega, addr, val, track_changes, changed);
 }
 
 unsigned text_char_width(const Ega *e)
@@ -745,7 +695,7 @@ uint32_t ega_poll(Ega *e, RenderContext *ctx)
         if (e->displine > 500) {
             e->displine = 0;
         }
-        return ega_delay_us(e, load_dispofftime(e));
+        return scanout::delay_us(e, scanout::load_dispofftime(e));
     }
 
     if (e->dispon) {
@@ -821,25 +771,12 @@ uint32_t ega_poll(Ega *e, RenderContext *ctx)
     if (e->sc == (e->crtc[10] & 31)) {
         e->con = 1;
     }
-    return ega_delay_us(e, load_dispontime(e));
+    return scanout::delay_us(e, scanout::load_dispontime(e));
 }
 
 void ega_advance_state(RenderContext *ctx)
 {
-    uint32_t now = time_us_32();
-    if (!ega.timing_started) {
-        ega.next_poll_us = now;
-        ega.timing_started = true;
-    }
-
-    unsigned steps = 0;
-    while ((int32_t)(now - ega.next_poll_us) >= 0 && steps < kMaxPollStepsPerTick) {
-        ega.next_poll_us += ega_poll(&ega, ctx);
-        ++steps;
-    }
-    if (steps == kMaxPollStepsPerTick && (int32_t)(now - ega.next_poll_us) > 0) {
-        ega.next_poll_us = now + 1;
-    }
+    scanout::advance_state(ega, ctx, ega_poll);
 }
 
 uint32_t __time_critical_func(normalize_vram_address)(uint32_t addr, int *readplane_or_mask)
@@ -878,65 +815,13 @@ bool __time_critical_func(ega_vram_active)(uint32_t address)
 
 int __time_critical_func(mark_text_cell_dirty)(uint32_t cell)
 {
-    if ((ega.gdcreg[6] & 1) || !ega.chain2_write ||
-        !display.frame_valid || display.source_height == 0 ||
-        display.vertical_scale == 0 || ega.hdisp <= 0 || ega.rowoffset <= 0 ||
-        display.first_line < 0 || display.first_line >= (int)kMaxEgaLines ||
-        ega.split <= ega.dispend) {
-        return kDirtyUnmapped;
-    }
-
-    unsigned visible_lines = display.source_height / display.vertical_scale;
-    unsigned char_height = (unsigned)(ega.crtc[9] & 31) + 1u;
-    if (visible_lines == 0) {
-        return kDirtyUnmapped;
-    }
-
-    uint32_t start_cell = ((uint32_t)ega.crtc[0x0c] << 8) | ega.crtc[0x0d];
-    uint32_t row_cells = (uint32_t)ega.rowoffset * 2u;
-    uint32_t visible_rows = (visible_lines + char_height - 1u) / char_height;
-    if (row_cells == 0 ||
-        start_cell >= 0x2000u ||
-        visible_rows > 0x2000u / row_cells ||
-        start_cell + visible_rows * row_cells > 0x2000u) {
-        return kDirtyUnmapped;
-    }
-
-    if (cell < start_cell) {
-        return kDirtyNoVisibleChange;
-    }
-
-    uint32_t relative = cell - start_cell;
-    uint32_t row = relative / row_cells;
-    uint32_t column = relative - row * row_cells;
-    if (column >= (uint32_t)ega.hdisp) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line_offset = row * char_height;
-    if (first_line_offset >= visible_lines) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line = (unsigned)display.first_line + first_line_offset;
-    unsigned end_offset = std::min<unsigned>(first_line_offset + char_height, visible_lines);
-    unsigned end_line = (unsigned)display.first_line + end_offset;
-    if (first_line >= kMaxEgaLines) {
-        return kDirtyNoVisibleChange;
-    }
-    end_line = std::min<unsigned>(end_line, kMaxEgaLines);
-    mark_display_line_range_dirty(first_line, end_line);
-    return kDirtyMapped;
+    bool mode_inactive = (ega.gdcreg[6] & 1) != 0;
+    return scanout::mark_text_cell_dirty(ega, display, kMaxEgaLines, mode_inactive, cell);
 }
 
 int __time_critical_func(mark_text_vram_write_dirty)(uint32_t address)
 {
-    uint32_t offset = (address >= 0xb0000) ? (address & 0x7fffu) : (address & 0xffffu);
-    if (offset & 0x4000u) {
-        return kDirtyUnmapped;
-    }
-
-    return mark_text_cell_dirty(offset >> 1);
+    return scanout::mark_text_vram_write_dirty(address, [](uint32_t cell) { return mark_text_cell_dirty(cell); });
 }
 
 void __time_critical_func(mark_cursor_cells_dirty)(uint32_t old_cell, uint32_t new_cell)
@@ -1002,58 +887,9 @@ bool __time_critical_func(crtc_reg_affects_pixels)(uint8_t index)
 
 int __time_critical_func(mark_graphics_vram_write_dirty)(uint32_t address)
 {
-    if (!(ega.gdcreg[6] & 1) || ega.chain2_write || (ega.seqregs[1] & 4) ||
-        (ega.crtc[0x17] & 0x43) != 0x43 ||
-        !display.frame_valid || display.source_height == 0 ||
-        display.vertical_scale == 0 || ega.hdisp <= 0 || ega.rowoffset <= 0 ||
-        display.first_line < 0 || display.first_line >= (int)kMaxEgaLines ||
-        ega.split <= ega.dispend) {
-        return kDirtyUnmapped;
-    }
-
-    unsigned visible_lines = display.source_height / display.vertical_scale;
-    unsigned scanlines_per_row = (unsigned)(ega.crtc[9] & 31) + 1u;
-    if (visible_lines == 0) {
-        return kDirtyUnmapped;
-    }
-
-    uint32_t base = normalize_vram_address(address, nullptr) & ~3u;
-    uint32_t start_base = (((uint32_t)ega.crtc[0x0c] << 8) | ega.crtc[0x0d]) << 2;
-    uint32_t row_bytes = (uint32_t)ega.rowoffset << 3;
-    uint32_t visible_rows = (visible_lines + scanlines_per_row - 1u) / scanlines_per_row;
-    if (row_bytes == 0 ||
-        start_base >= ega.vram_limit ||
-        visible_rows > (ega.vram_limit - start_base) / row_bytes ||
-        base >= ega.vram_limit) {
-        return kDirtyUnmapped;
-    }
-
-    if (base < start_base) {
-        return kDirtyNoVisibleChange;
-    }
-
-    uint32_t relative = base - start_base;
-    uint32_t row = relative / row_bytes;
-    uint32_t row_offset = relative - row * row_bytes;
-    uint32_t visible_groups = (uint32_t)ega.hdisp + ((ega.scrollcache & 7) ? 1u : 0u);
-    if (visible_groups == 0 || row_offset / 4u >= visible_groups) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line_offset = row * scanlines_per_row;
-    if (first_line_offset >= visible_lines) {
-        return kDirtyNoVisibleChange;
-    }
-
-    unsigned first_line = (unsigned)display.first_line + first_line_offset;
-    unsigned end_offset = std::min<unsigned>(first_line_offset + scanlines_per_row, visible_lines);
-    unsigned end_line = (unsigned)display.first_line + end_offset;
-    if (first_line >= kMaxEgaLines) {
-        return kDirtyNoVisibleChange;
-    }
-    end_line = std::min<unsigned>(end_line, kMaxEgaLines);
-    mark_display_line_range_dirty(first_line, end_line);
-    return kDirtyMapped;
+    bool mode_inactive = !(ega.gdcreg[6] & 1);
+    return scanout::mark_graphics_vram_write_dirty(ega, display, kMaxEgaLines, mode_inactive,
+                                                   [address] { return normalize_vram_address(address, nullptr); });
 }
 
 bool __time_critical_func(ega_write)(uint32_t addr, uint8_t val, bool track_changes)
@@ -1327,7 +1163,7 @@ uint8_t __time_critical_func(ega_in)(uint16_t addr)
     case 0x3da:
         ega.attrff = 0;
         ega.stat ^= 0x30;
-        return ega.stat;
+        return scanout::extrapolate_stat(ega, ega.stat);
     default:
         return 0xff;
     }
@@ -1355,40 +1191,18 @@ bool __time_critical_func(ega_mem_read)(uint32_t address, uint8_t *data)
 
 void __time_critical_func(ega_mem_write)(uint32_t address, uint8_t data)
 {
-    if (ega_vram_active(address)) {
-        bool full_dirty_pending = display.full_render_dirty_pending();
-        bool track_changes =
-            !full_dirty_pending &&
-            !display.content_dirty_pending();
-        bool changed = ega_write(address, data, track_changes);
-        if (full_dirty_pending) {
-            return;
-        }
-        if (!track_changes || changed) {
-            int dirty_result = mark_text_vram_write_dirty(address);
-            if (dirty_result == kDirtyUnmapped) {
-                dirty_result = mark_graphics_vram_write_dirty(address);
-            }
-            if (dirty_result != kDirtyUnmapped) {
-                if (dirty_result == kDirtyNoVisibleChange) {
-                    return;
-                }
-                display.set_content_dirty();
-                return;
-            }
-            request_display_dirty();
-        }
+    if (!ega_vram_active(address)) {
+        return;
     }
+    scanout::mem_write(display, address, data,
+                       [](uint32_t a, uint8_t d, bool track) { return ega_write(a, d, track); },
+                       [](uint32_t a) { return mark_text_vram_write_dirty(a); },
+                       [](uint32_t a) { return mark_graphics_vram_write_dirty(a); });
 }
 
 bool __time_critical_func(ega_rom_read)(uint32_t address, uint8_t *data)
 {
-    if (address < kEgaRomBase || address >= kEgaRomBase + kEgaRomSize) {
-        return false;
-    }
-    uint32_t offset = address - kEgaRomBase;
-    *data = (offset < kEgaRomImageSize) ? kPcemEgaBiosRom[offset] : 0xff;
-    return true;
+    return scanout::rom_read(address, kEgaRomBase, kEgaRomSize, kPcemEgaBiosRom, kEgaRomImageSize, data);
 }
 
 void build_tables()
@@ -1435,8 +1249,8 @@ void init()
     std::memset(&ega, 0, sizeof(ega));
     std::memset(line_buffer, 0, sizeof(line_buffer));
     display.reset(kMaxEgaWidth, kMaxEgaLines, line_buffer, "ega");
-    handled_timing_recalc_requests = 0;
-    __atomic_store_n(&timing_recalc_requests, 0u, __ATOMIC_RELEASE);
+    deferred_timing.handled = 0;
+    __atomic_store_n(&deferred_timing.requested, 0u, __ATOMIC_RELEASE);
     build_tables();
 
     ega.pallook = pallook16;
@@ -1464,16 +1278,9 @@ void init()
 
 void tick()
 {
-    PGC pGC = GCDisplay();
-    RenderContext ctx = {pGC, false, false};
-    RenderContext *pCtx = (pGC && pGC->bitmap.handle && GCWidth(pGC) > 0 && GCHeight(pGC) > 0) ? &ctx : nullptr;
-    handle_deferred_requests();
-    ega_advance_state(pCtx);
-
-    if (ctx.access_open) {
-        display.end_access(&ctx);
-    }
-    display.present_pending(pGC);
+    scanout::tick(display,
+                  [] { handle_deferred_requests(); },
+                  [](RenderContext *ctx) { ega_advance_state(ctx); });
 }
 
 IoTrap io_traps[] = {
