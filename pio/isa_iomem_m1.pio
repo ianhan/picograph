@@ -57,7 +57,11 @@ restart:
     out X,32            side 0b01    ; Dummy Get command
     jmp restart         side 0b01
 No_DMA:
-    nop           [2]   side 0b11    ; Delay, 3 clock tick ("Default" 2, 1 Working as well...)
+    nop           [3]   side 0b11    ; Delay for mux settle before sampling A8-A19.
+    nop           [3]   side 0b11    ; At 280 MHz the original single [2] delay left the
+                                     ; sample marginal: roughly 1 in 1000 captures read a
+                                     ; stale high address bit (seen as lost/misplaced VRAM
+                                     ; bytes during EGA latch copies).
     in pins, 12         side 0b00    ; Read Address High (A8-A19)     > Switch to Read/Write Data
 ; Data is read after by the Pico core (Not PIO)
     out X, 32           side 0b00    ; 2> Put the value sent by the main code to X : Do a Read if <> 0
