@@ -356,16 +356,6 @@ void __time_critical_func(DloDirtyDisplay::set_content_dirty)()
     __atomic_store_n(&content_dirty_, 1u, __ATOMIC_RELEASE);
 }
 
-bool DloDirtyDisplay::content_dirty_pending() const
-{
-    return __atomic_load_n(&content_dirty_, __ATOMIC_ACQUIRE) != 0;
-}
-
-bool DloDirtyDisplay::full_render_dirty_pending() const
-{
-    return __atomic_load_n(&full_render_dirty_, __ATOMIC_ACQUIRE) != 0;
-}
-
 bool DloDirtyDisplay::take_content_dirty()
 {
     return __atomic_exchange_n(&content_dirty_, 0u, __ATOMIC_ACQ_REL) != 0;

@@ -26,8 +26,17 @@ public:
 
     void request_dirty();
     void set_content_dirty();
-    bool content_dirty_pending() const;
-    bool full_render_dirty_pending() const;
+    // Called from the ISA bus trap path on core 1 for every VRAM write; defined
+    // inline so they compile into the RAM-resident callers instead of living in
+    // flash, where an XIP miss can stall core 1 past the bus engagement deadline.
+    bool content_dirty_pending() const
+    {
+        return __atomic_load_n(&content_dirty_, __ATOMIC_ACQUIRE) != 0;
+    }
+    bool full_render_dirty_pending() const
+    {
+        return __atomic_load_n(&full_render_dirty_, __ATOMIC_ACQUIRE) != 0;
+    }
     bool take_content_dirty();
     bool take_full_render_dirty();
     void clear_dirty_line_marks();

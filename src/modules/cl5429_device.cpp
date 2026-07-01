@@ -1699,7 +1699,7 @@ int cl_blt_x_max()
     }
 }
 
-void cl_start_blit()
+void __time_critical_func(cl_start_blit)()
 {
     int x_max = cl_blt_x_max();
     vga.blt.dst_addr_backup = vga.blt.dst_addr;

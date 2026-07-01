@@ -437,6 +437,17 @@ const char *trap_result_name(TrapResult result) {
 
         uint32_t raw_address = pio_sm_get_blocking(isa_pio, kIsaBusSm);
 
+        if (read_cycle_type() == 0) {
+            // The cycle ended before the address handshake completed, so the
+            // captured address (and any data) may be garbage from the muxes
+            // collapsing mid-capture. Drop it: losing the cycle corrupts at
+            // most the byte the host intended, while acting on it could write
+            // anywhere.
+            put_wait(false);
+            finish_without_read();
+            continue;
+        }
+
         if (cycle == kCycleIoRead || cycle == kCycleIoWrite) {
             uint16_t port = decode_io_port(raw_address);
             uint32_t slot = decode_io_slot(raw_address);
@@ -464,8 +475,10 @@ const char *trap_result_name(TrapResult result) {
                 if (trap->write) {
                     trap->write(port, data);
                 }
-                finish_without_read();
+                // Enqueue while the cycle is still stretched so the epilogue
+                // after releasing the bus stays as short as possible.
                 enqueue_io_snoop(snoop, port, data);
+                finish_without_read();
                 continue;
             }
 
@@ -483,9 +496,6 @@ const char *trap_result_name(TrapResult result) {
             uint32_t address = decode_mem_address(raw_address);
             const MemTrap *trap = mem_table[address / kIsaMemSlotSize];
             const MemSnoop *snoop = mem_snoop_table[address / kIsaMemSlotSize];
-            if (trap && trap->active && !trap->active(address)) {
-                trap = nullptr;
-            }
             if (!trap) {
                 put_wait(false);
                 uint8_t data = read_data_bus();
@@ -496,14 +506,30 @@ const char *trap_result_name(TrapResult result) {
                 continue;
             }
 
+            // Assert the wait state before consulting the trap's active()
+            // hook: every nanosecond shaved here is margin against the host
+            // chipset sampling CHRDY before the stretch takes effect.
             put_wait(trap->add_wait_state);
+            if (trap->active && !trap->active(address)) {
+                // The range is not currently mapped; complete like an
+                // untrapped cycle (the extra stretch is harmless).
+                if (cycle == kCycleMemWrite) {
+                    uint8_t data = read_data_bus();
+                    enqueue_mem_snoop(snoop, address, data);
+                }
+                finish_without_read();
+                continue;
+            }
+
             if (cycle == kCycleMemWrite) {
                 uint8_t data = read_data_bus();
                 if (trap->write) {
                     trap->write(address, data);
                 }
-                finish_without_read();
+                // Enqueue while the cycle is still stretched so the epilogue
+                // after releasing the bus stays as short as possible.
                 enqueue_mem_snoop(snoop, address, data);
+                finish_without_read();
                 continue;
             }
 
