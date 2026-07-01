@@ -35,6 +35,7 @@
 #define WRITE_RAW16  "\xAF\x68"  /**< 16 bit raw write command. */
 #define WRITE_RL16   "\xAF\x69"  /**< 16 bit run length write command. */
 #define WRITE_COPY16 "\xAF\x6A"  /**< 16 bit copy command. */
+#define WRITE_RLX16  "\xAF\x6B"  /**< 16 bit mixed raw/run-length write command. */
 
 
 /** Initialise the graphics primitive routines.
