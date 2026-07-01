@@ -38,6 +38,7 @@ set(PICOGRAPH_DISPLAYLINK_REFRESH "${PICOGRAPH_DISPLAYLINK_REFRESH_DEFAULT}" CAC
 set(PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE "65472" CACHE STRING "DisplayLink USB command buffer size")
 set(PICOGRAPH_DISPLAYLINK_16BPP ON CACHE BOOL "Run the DisplayLink device in 16bpp scanout mode (skips the 8bpp fine-detail plane)")
 set(PICOGRAPH_DISPLAYLINK_RLX ON CACHE BOOL "Use the af 6b mixed raw/run-length encoding for DisplayLink pixel uploads")
+set(PICOGRAPH_REALTIME_STATUS ON CACHE BOOL "Extrapolate the video status register from the wall clock when the scanline engine lags, so host retrace loops never see frozen timing")
 set(PICOGRAPH_MONOCHROME_DISPLAY_COLOR "GREEN" CACHE STRING "Monochrome display color: WHITE, GREEN, AMBER")
 set(PICOGRAPH_EGA_MEMORY_KB "256" CACHE STRING "EGA memory size: 64, 128, 256")
 set(PICOGRAPH_EGA_MONITOR_TYPE "COLOR_ECD" CACHE STRING "EGA monitor type: COLOR_40, COLOR_80, COLOR_ECD, MONO")
@@ -168,6 +169,7 @@ target_include_directories(picograph PRIVATE
 target_compile_definitions(picograph PRIVATE
     PICOGRAPH_VERSION="${PROJECT_VERSION}"
     PICOGRAPH_SYS_CLK_KHZ=${PICOGRAPH_SYS_CLK_KHZ}
+    PICOGRAPH_REALTIME_STATUS=$<BOOL:${PICOGRAPH_REALTIME_STATUS}>
     PICOGRAPH_SAMPLE_IO_BASE=${PICOGRAPH_SAMPLE_IO_BASE}
     PICOGRAPH_SAMPLE_MEM_BASE=${PICOGRAPH_SAMPLE_MEM_BASE}
     PICOGRAPH_SAMPLE_MEM_SNOOP_BASE=${PICOGRAPH_SAMPLE_MEM_SNOOP_BASE}

@@ -2006,6 +2006,56 @@ void __time_critical_func(vga_out)(uint16_t addr, uint8_t val)
     }
 }
 
+// The scanline engine on core 0 advances in real time only while it gets CPU
+// time; during DisplayLink upload bursts it can stall for milliseconds with
+// the status register frozen mid-phase. Host timing loops key off 3da: id
+// Software's SyncVBL hunts for the vertical front porch (display disabled,
+// vsync inactive) with tight IN loops and treats a long reading of that
+// state as vertical blank, so a frozen blanking phase makes the game flip
+// and draw over the page still being scanned. When the engine is behind,
+// derive display-enable and vretrace from the wall clock instead of the
+// frozen state. Runs on core 1; the racy field reads can at worst produce
+// one odd sample, which persistence-checking host loops reject.
+uint8_t __time_critical_func(extrapolate_stat)(uint8_t stat)
+{
+#if !PICOGRAPH_REALTIME_STATUS
+    return stat;
+#endif
+    if (!vga.timing_started) {
+        return stat;
+    }
+    int32_t behind = (int32_t)(time_us_32() - vga.next_poll_us);
+    if (behind <= 0) {
+        return stat;
+    }
+
+    uint32_t blank_us = (uint32_t)(load_dispofftime(&vga) >> kTimingFracBits);
+    uint32_t active_us = (uint32_t)(load_dispontime(&vga) >> kTimingFracBits);
+    uint32_t line_us = blank_us + active_us;
+    uint32_t vtotal = (uint32_t)vga.vtotal;
+    if (line_us == 0 || vtotal == 0) {
+        return stat;
+    }
+
+    // next_poll_us is the deadline of the phase the engine is stuck in:
+    // linepos==1 means the blanking phase of the current line is ending,
+    // otherwise the active phase (end of line) is. Advance from there.
+    uint32_t pos = vga.linepos ? blank_us : line_us;
+    uint32_t total = pos + (uint32_t)behind;
+    uint32_t line = ((uint32_t)vga.vc + total / line_us) % vtotal;
+    uint32_t rem = total % line_us;
+
+    stat &= (uint8_t)~0x09u;
+    if (line >= (uint32_t)vga.dispend || rem < blank_us) {
+        stat |= 0x01;
+    }
+    uint32_t vsyncstart = (uint32_t)vga.vsyncstart;
+    if (line >= vsyncstart && line < vsyncstart + 4u) {
+        stat |= 0x08;
+    }
+    return stat;
+}
+
 uint8_t __time_critical_func(vga_in)(uint16_t addr)
 {
     if (((addr & 0xfff0) == 0x3d0 || (addr & 0xfff0) == 0x3b0) && !(vga.miscout & 1)) {
@@ -2073,7 +2123,7 @@ uint8_t __time_critical_func(vga_in)(uint16_t addr)
     case 0x3da:
         vga.attrff = 0;
         vga.stat ^= 0x30;
-        return vga.stat;
+        return extrapolate_stat(vga.stat);
     default:
         return 0xff;
     }
