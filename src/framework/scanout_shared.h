@@ -72,6 +72,13 @@ PICOGRAPH_SCANOUT_INLINE uint64_t load_dispofftime(const Dev *e)
     return __atomic_load_n(&e->dispofftime, __ATOMIC_ACQUIRE);
 }
 
+// When the render/USB side stalls core 0, the engine must not fast-forward
+// through the missed time: replayed scanlines emit vertical-retrace edges at
+// burst speed, and hosts that measure refresh by timing 3DA edges see a
+// multiple of the programmed rate. Bound the lag and drop the excess; the
+// wall-clock status extrapolation covers the bounded window continuously.
+constexpr int32_t kMaxCatchupUs = 2000;
+
 template <typename Dev, typename PollFn>
 inline void advance_state(Dev &dev, DloDirtyDisplay::RenderContext *ctx, PollFn &&poll)
 {
@@ -79,6 +86,9 @@ inline void advance_state(Dev &dev, DloDirtyDisplay::RenderContext *ctx, PollFn 
     if (!dev.timing_started) {
         dev.next_poll_us = now;
         dev.timing_started = true;
+    }
+    if ((int32_t)(now - dev.next_poll_us) > kMaxCatchupUs) {
+        dev.next_poll_us = now - (uint32_t)kMaxCatchupUs;
     }
 
     unsigned steps = 0;
@@ -101,6 +111,28 @@ inline void advance_state(Dev &dev, DloDirtyDisplay::RenderContext *ctx, PollFn 
 // behind, derive display-enable and vretrace from the wall clock instead of
 // the frozen state. Runs on core 1; the racy field reads can at worst
 // produce one odd sample, which persistence-checking host loops reject.
+// Reset the status-waveform time origin only when the mode timing itself
+// changes. A stale anchor is harmless - the modulo arithmetic below keeps
+// the waveform perfectly periodic forever - but re-anchoring on engine lag
+// would snap the phase and corrupt the period hosts measure.
+template <typename Dev>
+inline void note_frame_anchor(Dev &dev)
+{
+    uint32_t line_us = (uint32_t)((load_dispontime(&dev) + load_dispofftime(&dev) + (kTimingOne / 2)) >> kTimingFracBits);
+    uint32_t frame_us = line_us * (uint32_t)dev.vtotal;
+    if (frame_us != dev.frame_period_us) {
+        dev.frame_period_us = frame_us;
+        dev.frame_anchor_us = dev.next_poll_us;
+    }
+}
+
+// Hosts read timing from the status port with tight IN loops (vsync waits,
+// refresh meters that time retrace edges). The scanline engine's own state
+// advances in bursts and its fields cannot be read atomically from the
+// other core, so the register view is derived purely from the wall clock
+// and the frame anchor - a free-running counter, like the real CRTC. The
+// mode constants read below only change on a retiming, at worst producing
+// one odd frame.
 template <typename Dev>
 PICOGRAPH_SCANOUT_INLINE uint8_t extrapolate_stat(const Dev &dev, uint8_t stat)
 {
@@ -110,29 +142,21 @@ PICOGRAPH_SCANOUT_INLINE uint8_t extrapolate_stat(const Dev &dev, uint8_t stat)
     if (!dev.timing_started) {
         return stat;
     }
-    int32_t behind = (int32_t)(time_us_32() - dev.next_poll_us);
-    if (behind <= 0) {
-        return stat;
-    }
 
-    uint32_t blank_us = (uint32_t)(load_dispofftime(&dev) >> kTimingFracBits);
-    uint32_t active_us = (uint32_t)(load_dispontime(&dev) >> kTimingFracBits);
+    uint32_t blank_us = (uint32_t)((load_dispofftime(&dev) + (kTimingOne / 2)) >> kTimingFracBits);
+    uint32_t active_us = (uint32_t)((load_dispontime(&dev) + (kTimingOne / 2)) >> kTimingFracBits);
     uint32_t line_us = blank_us + active_us;
     uint32_t vtotal = (uint32_t)dev.vtotal;
     if (line_us == 0 || vtotal == 0) {
         return stat;
     }
 
-    // next_poll_us is the deadline of the phase the engine is stuck in:
-    // linepos==1 means the blanking phase of the current line is ending,
-    // otherwise the active phase (end of line) is. Advance from there.
-    uint32_t pos = dev.linepos ? blank_us : line_us;
-    uint32_t total = pos + (uint32_t)behind;
-    uint32_t line = ((uint32_t)dev.vc + total / line_us) % vtotal;
-    uint32_t rem = total % line_us;
+    uint32_t elapsed = (time_us_32() - dev.frame_anchor_us) % (line_us * vtotal);
+    uint32_t line = elapsed / line_us;
+    uint32_t rem = elapsed % line_us;
 
     stat &= (uint8_t)~0x09u;
-    if (line >= (uint32_t)dev.dispend || rem < blank_us) {
+    if (line >= (uint32_t)dev.dispend || rem >= active_us) {
         stat |= 0x01;
     }
     uint32_t vsyncstart = (uint32_t)dev.vsyncstart;

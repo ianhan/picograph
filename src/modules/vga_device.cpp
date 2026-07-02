@@ -92,6 +92,8 @@ struct Vga {
     uint64_t dispontime, dispofftime;
     uint32_t timer_frac;
     uint32_t next_poll_us;
+    volatile uint32_t frame_anchor_us;
+    uint32_t frame_period_us;
     bool timing_started;
 
     uint8_t scrblank;
@@ -808,6 +810,7 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         e->sc = e->crtc[8] & 0x1f;
         e->dispon = 1;
         e->displine = 0;
+        scanout::note_frame_anchor(*e);
         uint32_t palette_gen = __atomic_load_n(&e->palette_generation, __ATOMIC_ACQUIRE);
         if (palette_gen != e->palette_generation_handled) {
             e->palette_generation_handled = palette_gen;

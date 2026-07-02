@@ -124,6 +124,8 @@ struct Vga {
     uint64_t dispontime, dispofftime;
     uint32_t timer_frac;
     uint32_t next_poll_us;
+    volatile uint32_t frame_anchor_us;
+    uint32_t frame_period_us;
     bool timing_started;
 
     uint8_t scrblank;
@@ -148,6 +150,17 @@ struct Vga {
     uint8_t dac_3c6_count;
     uint8_t sr10_read, sr11_read;
     uint8_t latch_ext[4];
+
+    uint32_t vram_display_mask;
+
+    struct Cursor {
+        int x, y;
+        int ysize;
+        uint8_t ena;
+        uint32_t addr;
+    } hwcursor, hwcursor_latch;
+    int hwcursor_on;
+    uint8_t hwcursor_oddeven;
 
     struct Blt {
         uint32_t bg_col, fg_col;
@@ -411,7 +424,35 @@ void vga_recalctimings(Vga *e)
         }
     }
 
-    uint32_t hz = e->vidclock ? kVgaPixelClock1Hz : kVgaPixelClock0Hz;
+    e->vram_display_mask = (e->crtc[0x1b] & 2) ? e->vrammask : 0x3ffffu;
+
+    // Cirrus VCLK PLL: the clock select in MISC picks one of four
+    // numerator/denominator register pairs; SR7[2:1] post-divides for the
+    // wide-pixel modes. The BIOS defaults reproduce the two VGA clocks.
+    uint32_t hz;
+    {
+        int clock_sel = (e->miscout >> 2) & 3;
+        uint32_t n = e->seqregs[0x0b + clock_sel] & 0x7f;
+        uint32_t d = (e->seqregs[0x1b + clock_sel] >> 1) & 0x1f;
+        uint32_t post = (e->seqregs[0x1b + clock_sel] & 1) ? 2u : 1u;
+        if (n && d) {
+            uint64_t vclk = (14318184ull * n) / (d * post);
+            switch (e->seqregs[7] & 6) {
+            case 2:
+                vclk /= 2;
+                break;
+            case 4:
+                vclk /= 3;
+                break;
+            }
+            hz = (uint32_t)vclk;
+        } else {
+            hz = e->vidclock ? kVgaPixelClock1Hz : kVgaPixelClock0Hz;
+        }
+        if (hz < 1000000u) {
+            hz = kVgaPixelClock0Hz;
+        }
+    }
     int disptime = e->htotal;
     int dispontime = e->hdisp_time;
     if (e->seqregs[1] & 8) {
@@ -662,7 +703,7 @@ uint32_t vga_remap_address(const Vga *e, uint32_t in_addr)
     if (!(e->crtc[0x17] & 0x02)) {
         out_addr = (out_addr & ~(1u << 16)) | ((e->sc & 2) ? (1u << 16) : 0);
     }
-    return out_addr & e->vrammask;
+    return out_addr & e->vram_display_mask;
 }
 
 void vga_draw_2bpp(Vga *e, unsigned width)
@@ -909,6 +950,45 @@ bool should_skip_current_line_render(const Vga *e)
     return display.should_skip_line((unsigned)e->displine);
 }
 
+// Overlay the hardware cursor into the rendered line, PCem's
+// gd5429_hwcursor_draw: two bit planes, plane 1 forces black, plane 0
+// inverts. 32px cursors keep plane 1 at +0x80; 64px cursors interleave
+// 8-byte plane runs per line. Mutates hwcursor_latch.addr like PCem.
+void draw_hwcursor_line(Vga *e, unsigned width)
+{
+    int line_offset = (e->hwcursor_latch.ysize == 64) ? 16 : 4;
+    if (e->interlace && e->hwcursor_oddeven) {
+        e->hwcursor_latch.addr += line_offset;
+    }
+    int xsize = e->hwcursor_latch.ysize;
+    for (int x = 0; x < xsize; x += 8) {
+        uint8_t dat0 = vram_load(e->hwcursor_latch.addr);
+        uint8_t dat1 = (e->hwcursor_latch.ysize == 64)
+                           ? vram_load(e->hwcursor_latch.addr + 8u)
+                           : vram_load(e->hwcursor_latch.addr + 0x80u);
+        for (int xx = 0; xx < 8; ++xx) {
+            int dst = e->hwcursor_latch.x + x + xx;
+            if (dst >= 0 && dst < (int)width) {
+                if (dat1 & 0x80) {
+                    line_buffer[dst] = makecol(0, 0, 0);
+                }
+                if (dat0 & 0x80) {
+                    line_buffer[dst] = (GCCOLOR)~line_buffer[dst];
+                }
+            }
+            dat0 <<= 1;
+            dat1 <<= 1;
+        }
+        e->hwcursor_latch.addr++;
+    }
+    if (e->hwcursor_latch.ysize == 64) {
+        e->hwcursor_latch.addr += 8;
+    }
+    if (e->interlace && !e->hwcursor_oddeven) {
+        e->hwcursor_latch.addr += line_offset;
+    }
+}
+
 void draw_current_line(RenderContext *ctx, Vga *e)
 {
     unsigned width = current_line_width(e);
@@ -919,7 +999,7 @@ void draw_current_line(RenderContext *ctx, Vga *e)
     if (display.render_frame) {
         display.ensure_draw_page_ready_for_partial(ctx);
     }
-    if (should_skip_current_line_render(e)) {
+    if (!e->hwcursor_on && should_skip_current_line_render(e)) {
         advance_current_line_without_render(e);
         return;
     }
@@ -949,6 +1029,14 @@ void draw_current_line(RenderContext *ctx, Vga *e)
         vga_draw_8bpp(e, width);
     } else {
         vga_draw_4bpp(e, width);
+    }
+
+    if (e->hwcursor_on) {
+        draw_hwcursor_line(e, width);
+        e->hwcursor_on--;
+        if (e->hwcursor_on && e->interlace) {
+            e->hwcursor_on--;
+        }
     }
 
     if (!ctx || !ctx->pGC || !display.frame_valid ||
@@ -984,6 +1072,31 @@ void publish_frame(Vga *e)
     e->frames++;
     e->video_res_x = xsize;
     e->video_res_y = ysize + 1;
+    static uint32_t last_mode_sig;
+    uint32_t mode_sig = (uint32_t)width ^ ((uint32_t)source_height << 11) ^
+                        ((uint32_t)e->truecolor_bpp << 22) ^ ((uint32_t)e->writemode << 27) ^
+                        ((uint32_t)e->seqregs[7] << 8) ^ ((uint32_t)e->gdcreg[0x0b] << 16) ^
+                        ((uint32_t)e->hidden_dac_reg << 24) ^ ((uint32_t)e->interlace << 30);
+    if (mode_sig != last_mode_sig) {
+        last_mode_sig = mode_sig;
+        uint32_t line_frac = (uint32_t)((scanout::load_dispontime(e) + scanout::load_dispofftime(e)) >> 6);
+        printf("cl5429: guest %ux%u bpp=%u SR7=%02x GR0=%02x GR1=%02x GR5=%02x GR6=%02x GRB=%02x "
+               "dac=%02x wm=%u c4=%u p4=%u CR13=%02x CR17=%02x CR1B=%02x il=%d "
+               "line=%lu.%02luus ht=%d vt=%d (%lu.%01luHz)\n",
+               width, source_height, e->truecolor_bpp ? e->truecolor_bpp : 8u,
+               e->seqregs[7], e->gdcreg[0], e->gdcreg[1], e->gdcreg[5], e->gdcreg[6],
+               e->gdcreg[0x0b], e->hidden_dac_reg, (unsigned)e->writemode,
+               e->chain4 ? 1u : 0u, e->packed_chain4 ? 1u : 0u,
+               e->crtc[0x13], e->crtc[0x17], e->crtc[0x1b], e->interlace,
+               (unsigned long)(line_frac >> 10), (unsigned long)(((line_frac & 1023u) * 100u) >> 10),
+               e->htotal, e->vtotal,
+               line_frac ? (unsigned long)((1000000ull << 10) / ((uint64_t)line_frac * e->vtotal)) : 0ul,
+               line_frac ? (unsigned long)(((10000000ull << 10) / ((uint64_t)line_frac * e->vtotal)) % 10) : 0ul);
+        printf("cl5429: pll misc=%02x SRB=%02x SRC=%02x SRD=%02x SRE=%02x "
+               "SR1B=%02x SR1C=%02x SR1D=%02x SR1E=%02x SR1=%02x\n",
+               e->miscout, e->seqregs[0x0b], e->seqregs[0x0c], e->seqregs[0x0d], e->seqregs[0x0e],
+               e->seqregs[0x1b], e->seqregs[0x1c], e->seqregs[0x1d], e->seqregs[0x1e], e->seqregs[1]);
+    }
     if (!(e->gdcreg[6] & 1) && !(e->attrregs[0x10] & 1)) {
         e->video_res_x /= (e->seqregs[1] & 1) ? 8 : 9;
         e->video_res_y /= (e->crtc[9] & 31) + 1;
@@ -1022,6 +1135,14 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
 {
     int x;
     if (!e->linepos) {
+        if (e->displine == e->hwcursor_latch.y && e->hwcursor_latch.ena) {
+            e->hwcursor_on = e->hwcursor_latch.ysize;
+            e->hwcursor_oddeven = 0;
+        }
+        if (e->interlace && e->displine == e->hwcursor_latch.y + 1 && e->hwcursor_latch.ena) {
+            e->hwcursor_on = e->hwcursor_latch.ysize;
+            e->hwcursor_oddeven = 1;
+        }
         e->stat |= 1;
         e->linepos = 1;
         if (e->dispon) {
@@ -1064,9 +1185,9 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
             if (e->sc == (e->crtc[11] & 31)) {
                 e->con = 0;
             }
-            e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vrammask;
+            e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vram_display_mask;
             if (e->interlace) {
-                e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vrammask;
+                e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vram_display_mask;
             }
             e->ma = e->maback;
         } else {
@@ -1116,7 +1237,11 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         e->firstline = 2000;
         e->lastline = 0;
         e->oddeven ^= 1;
-        e->maback = e->ma = (e->crtc[0xc] << 8) | e->crtc[0xd];
+        uint32_t ma_latch = (((uint32_t)e->crtc[0xc] << 8) | e->crtc[0xd]) +
+                            (((uint32_t)e->crtc[8] & 0x60) >> 5);
+        ma_latch |= ((uint32_t)(e->crtc[0x1b] & 0x01) << 16) |
+                    ((uint32_t)(e->crtc[0x1b] & 0x0c) << 15);
+        e->maback = e->ma = ma_latch;
         if (e->interlace && e->oddeven) {
             e->maback = e->ma = e->ma + ((uint32_t)e->rowoffset << 1);
         }
@@ -1131,6 +1256,7 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         e->sc = e->crtc[8] & 0x1f;
         e->dispon = 1;
         e->displine = (e->interlace && e->oddeven) ? 1 : 0;
+        scanout::note_frame_anchor(*e);
         uint32_t palette_gen = __atomic_load_n(&e->palette_generation, __ATOMIC_ACQUIRE);
         if (palette_gen != e->palette_generation_handled) {
             e->palette_generation_handled = palette_gen;
@@ -1138,6 +1264,8 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         }
         e->scrollcache = e->attrregs[0x13] & 7;
         e->linecountff = 0;
+        e->hwcursor_latch = e->hwcursor;
+        e->hwcursor_on = 0;
     }
     if (e->sc == (e->crtc[10] & 31)) {
         e->con = 1;
@@ -1152,14 +1280,6 @@ void vga_advance_state(RenderContext *ctx)
 
 uint32_t __time_critical_func(normalize_vram_address)(uint32_t addr, int *readplane_or_mask)
 {
-    if (addr >= kVgaMemBase) {
-        if (addr >= 0xb0000) {
-            addr &= 0x7fffu;
-        } else {
-            addr &= 0xffffu;
-        }
-    }
-
     if (vga.gdcreg[0x0b] & kClGrbEnhanced16Bit) {
         addr <<= 4;
     } else if (vga.gdcreg[0x0b] & kClGrbX8Addressing) {
@@ -1189,14 +1309,6 @@ uint32_t __time_critical_func(normalize_vram_address)(uint32_t addr, int *readpl
 
 uint32_t __time_critical_func(normalize_vram_write_address)(uint32_t addr, int *writemask2)
 {
-    if (addr >= kVgaMemBase) {
-        if (addr >= 0xb0000) {
-            addr &= 0x7fffu;
-        } else {
-            addr &= 0xffffu;
-        }
-    }
-
     if (vga.gdcreg[0x0b] & kClGrbEnhanced16Bit) {
         addr <<= 4;
     } else if (vga.gdcreg[0x0b] & kClGrbX8Addressing) {
@@ -1275,27 +1387,6 @@ void __time_critical_func(mark_cursor_cell_dirty)(uint32_t cell)
     }
 }
 
-bool __time_critical_func(crtc_reg_affects_timing)(uint8_t index)
-{
-    switch (index) {
-    case 0x00:
-    case 0x01:
-    case 0x06:
-    case 0x07:
-    case 0x09:
-    case 0x10:
-    case 0x12:
-    case 0x13:
-    case 0x15:
-    case 0x18:
-    case 0x1a:
-    case 0x1b:
-        return true;
-    default:
-        return false;
-    }
-}
-
 bool __time_critical_func(crtc_reg_affects_pixels)(uint8_t index)
 {
     switch (index) {
@@ -1337,15 +1428,84 @@ bool __time_critical_func(vga_write)(uint32_t addr, uint8_t val, bool track_chan
     }
 
     switch (vga.writemode) {
+    case 4:
+        // Cirrus extended write mode 4: transparent color expand, one host
+        // byte writes up to 8 (or 16 with enhanced-16bit) foreground bytes.
+        if (vga.gdcreg[0x0b] & kClGrbEnhanced16Bit) {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                uint8_t mask = (uint8_t)(0x80u >> bit);
+                if (val & vga.seqregs[2] & mask) {
+                    vram_store_write(addr + bit * 2u, vga.gdcreg[1], track_changes, &changed);
+                    vram_store_write(addr + bit * 2u + 1u, vga.gdcreg[0x11], track_changes, &changed);
+                }
+            }
+        } else {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                uint8_t mask = (uint8_t)(0x80u >> bit);
+                if (val & vga.seqregs[2] & mask) {
+                    vram_store_write(addr + bit, vga.gdcreg[1], track_changes, &changed);
+                }
+            }
+        }
+        return changed;
+    case 5:
+        // Cirrus extended write mode 5: opaque color expand (fg/bg).
+        if (vga.gdcreg[0x0b] & kClGrbEnhanced16Bit) {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                uint8_t mask = (uint8_t)(0x80u >> bit);
+                if (vga.seqregs[2] & mask) {
+                    vram_store_write(addr + bit * 2u,
+                                     (val & mask) ? vga.gdcreg[1] : vga.gdcreg[0],
+                                     track_changes, &changed);
+                    vram_store_write(addr + bit * 2u + 1u,
+                                     (val & mask) ? vga.gdcreg[0x11] : vga.gdcreg[0x10],
+                                     track_changes, &changed);
+                }
+            }
+        } else {
+            for (unsigned bit = 0; bit < 8; ++bit) {
+                uint8_t mask = (uint8_t)(0x80u >> bit);
+                if (vga.seqregs[2] & mask) {
+                    vram_store_write(addr + bit,
+                                     (val & mask) ? vga.gdcreg[1] : vga.gdcreg[0],
+                                     track_changes, &changed);
+                }
+            }
+        }
+        return changed;
     case 1:
-        if (writemask2 & 1) vram_store_write(addr, vga.la, track_changes, &changed);
-        if (writemask2 & 2) vram_store_write(addr | 1u, vga.lb, track_changes, &changed);
-        if (writemask2 & 4) vram_store_write(addr | 2u, vga.lc, track_changes, &changed);
-        if (writemask2 & 8) vram_store_write(addr | 3u, vga.ld, track_changes, &changed);
+        if (vga.gdcreg[0x0b] & kClGrbWriteModeExt) {
+            if (writemask2 & 0x80) vram_store_write(addr, vga.la, track_changes, &changed);
+            if (writemask2 & 0x40) vram_store_write(addr | 1u, vga.lb, track_changes, &changed);
+            if (writemask2 & 0x20) vram_store_write(addr | 2u, vga.lc, track_changes, &changed);
+            if (writemask2 & 0x10) vram_store_write(addr | 3u, vga.ld, track_changes, &changed);
+            if (vga.gdcreg[0x0b] & kClGrb8bLatches) {
+                if (writemask2 & 0x08) vram_store_write(addr | 4u, vga.latch_ext[0], track_changes, &changed);
+                if (writemask2 & 0x04) vram_store_write(addr | 5u, vga.latch_ext[1], track_changes, &changed);
+                if (writemask2 & 0x02) vram_store_write(addr | 6u, vga.latch_ext[2], track_changes, &changed);
+                if (writemask2 & 0x01) vram_store_write(addr | 7u, vga.latch_ext[3], track_changes, &changed);
+            }
+        } else {
+            if (writemask2 & 1) vram_store_write(addr, vga.la, track_changes, &changed);
+            if (writemask2 & 2) vram_store_write(addr | 1u, vga.lb, track_changes, &changed);
+            if (writemask2 & 4) vram_store_write(addr | 2u, vga.lc, track_changes, &changed);
+            if (writemask2 & 8) vram_store_write(addr | 3u, vga.ld, track_changes, &changed);
+        }
         break;
     case 0:
         if (vga.gdcreg[3] & 7) {
             val = vga_rotate[vga.gdcreg[3] & 7][val];
+        }
+        // Fast path, and the Cirrus set/reset disable (SR7.0): packed modes
+        // write host bytes straight through even with GR1 enabled, which is
+        // repurposed as the blitter foreground color on this chip.
+        if (vga.gdcreg[8] == 0xff && !(vga.gdcreg[3] & 0x18) &&
+            (!vga.gdcreg[1] || (vga.seqregs[7] & 1))) {
+            if (writemask2 & 1) vram_store_write(addr, val, track_changes, &changed);
+            if (writemask2 & 2) vram_store_write(addr | 1u, val, track_changes, &changed);
+            if (writemask2 & 4) vram_store_write(addr | 2u, val, track_changes, &changed);
+            if (writemask2 & 8) vram_store_write(addr | 3u, val, track_changes, &changed);
+            return changed;
         }
         if (vga.gdcreg[1] & 1) vala = (vga.gdcreg[0] & 1) ? 0xff : 0; else vala = val;
         if (vga.gdcreg[1] & 2) valb = (vga.gdcreg[0] & 2) ? 0xff : 0; else valb = val;
@@ -1432,15 +1592,46 @@ bool __time_critical_func(vga_write)(uint32_t addr, uint8_t val, bool track_chan
 uint8_t __time_critical_func(vga_read)(uint32_t addr)
 {
     int readplane = vga.readplane;
+    uint32_t latch_addr;
+
+    if (vga.gdcreg[0x0b] & kClGrbEnhanced16Bit) {
+        latch_addr = (addr << 4) & vga.decode_mask;
+    } else if (vga.gdcreg[0x0b] & kClGrbX8Addressing) {
+        latch_addr = (addr << 3) & vga.decode_mask;
+    } else {
+        latch_addr = (addr << 2) & vga.decode_mask;
+    }
+
     addr = normalize_vram_address(addr, &readplane);
+    if (cl_packed_linear(&vga)) {
+        // Packed linear reads return the byte directly without disturbing
+        // the latches, as the real chip (and PCem) do.
+        if (addr >= vga.vram_limit) {
+            return 0xff;
+        }
+        return vram_load(addr);
+    }
+    if (latch_addr >= vga.vram_limit) {
+        vga.la = vga.lb = vga.lc = vga.ld = 0xff;
+        if (vga.gdcreg[0x0b] & kClGrb8bLatches) {
+            vga.latch_ext[0] = vga.latch_ext[1] = vga.latch_ext[2] = vga.latch_ext[3] = 0xff;
+        }
+    } else {
+        vga.la = vram_load(latch_addr);
+        vga.lb = vram_load(latch_addr | 1u);
+        vga.lc = vram_load(latch_addr | 2u);
+        vga.ld = vram_load(latch_addr | 3u);
+        if (vga.gdcreg[0x0b] & kClGrb8bLatches) {
+            vga.latch_ext[0] = vram_load(latch_addr | 4u);
+            vga.latch_ext[1] = vram_load(latch_addr | 5u);
+            vga.latch_ext[2] = vram_load(latch_addr | 6u);
+            vga.latch_ext[3] = vram_load(latch_addr | 7u);
+        }
+    }
     if (addr >= vga.vram_limit) {
         return 0xff;
     }
 
-    vga.la = vram_load(addr);
-    vga.lb = vram_load(addr | 1u);
-    vga.lc = vram_load(addr | 2u);
-    vga.ld = vram_load(addr | 3u);
     if (vga.readmode) {
         uint8_t a = (vga.la ^ ((vga.colourcompare & 1) ? 0xff : 0)) & ((vga.colournocare & 1) ? 0xff : 0);
         uint8_t b = (vga.lb ^ ((vga.colourcompare & 2) ? 0xff : 0)) & ((vga.colournocare & 2) ? 0xff : 0);
@@ -1471,6 +1662,19 @@ void cl_update_writemode()
     }
 }
 
+void __time_critical_func(mark_cursor_span_dirty)(int y, int ysize)
+{
+    if (y < 0) {
+        ysize += y;
+        y = 0;
+    }
+    if (ysize <= 0 || y >= (int)kMaxVgaLines) {
+        return;
+    }
+    unsigned end = std::min<unsigned>((unsigned)(y + ysize), kMaxVgaLines);
+    display.mark_line_range_dirty((unsigned)y, end);
+}
+
 void cl_write_sequencer_data(uint8_t val)
 {
     uint8_t index = vga.seqaddr & 0x3f;
@@ -1485,10 +1689,39 @@ void cl_write_sequencer_data(uint8_t val)
             request_display_dirty();
             break;
         case 0x10:
+            vga.hwcursor.x = ((int)val << 3) | ((vga.seqaddr >> 5) & 7);
             vga.sr10_read = vga.seqaddr & 0xe0u;
+            if (vga.hwcursor.ena) {
+                mark_cursor_span_dirty(vga.hwcursor.y, vga.hwcursor.ysize);
+            }
             break;
-        case 0x11:
+        case 0x11: {
+            int old_y = vga.hwcursor.y;
+            vga.hwcursor.y = ((int)val << 3) | ((vga.seqaddr >> 5) & 7);
             vga.sr11_read = vga.seqaddr & 0xe0u;
+            if (vga.hwcursor.ena) {
+                mark_cursor_span_dirty(old_y, vga.hwcursor.ysize);
+                mark_cursor_span_dirty(vga.hwcursor.y, vga.hwcursor.ysize);
+            }
+            break;
+        }
+        case 0x12: {
+            int old_ysize = vga.hwcursor.ysize ? vga.hwcursor.ysize : 32;
+            vga.hwcursor.ena = val & 1;
+            vga.hwcursor.ysize = (val & 4) ? 64 : 32;
+            vga.hwcursor.addr = (0x3fc000u +
+                                 (uint32_t)(vga.seqregs[0x13] & ((val & 4) ? 0x3c : 0x3f)) * 256u) &
+                                vga.vrammask;
+            mark_cursor_span_dirty(vga.hwcursor.y, std::max(old_ysize, vga.hwcursor.ysize));
+            break;
+        }
+        case 0x13:
+            vga.hwcursor.addr = (0x3fc000u +
+                                 (uint32_t)(val & ((vga.seqregs[0x12] & 4) ? 0x3c : 0x3f)) * 256u) &
+                                vga.vrammask;
+            if (vga.hwcursor.ena) {
+                mark_cursor_span_dirty(vga.hwcursor.y, vga.hwcursor.ysize);
+            }
             break;
         case 0x17:
             cl_recalc_mapping(&vga);
@@ -1586,6 +1819,12 @@ void cl_write_graphics_data(uint8_t val)
     vga.gdcreg[index] = val;
 
     switch (index) {
+    case 0:
+        cl_mmio_write(0xb8000, val);
+        break;
+    case 1:
+        cl_mmio_write(0xb8004, val);
+        break;
     case 2:
         vga.colourcompare = val;
         break;
@@ -1745,61 +1984,120 @@ int cl_blt_x_max(const Vga::Blt &blt)
     }
 }
 
-// Runs the blit engine against a private copy of the programmed state, so a
-// deferred run on core 0 never races the guest reprogramming the registers.
-void __time_critical_func(cl_run_blit)(Vga::Blt blt)
+// CPU-fed blit: data streams in through the A0000 window on core 1, so this
+// engine instance runs synchronously in the trap. The hardware consumes
+// system-source data in DWORD granularity per scanline: up to three bytes
+// of the last transfer of each scanline are ignored and the next scanline
+// begins at the next four-byte boundary of the stream (TRM appendix D8).
+Vga::Blt cpu_blt;
+volatile bool cpu_blit_active;
+uint32_t cpu_stream_pos;
+bool cpu_align_skip;
+bool cpu_blit_line_done;
+volatile uint32_t blit_reset_gen;
+uint32_t pending_blit_reset_gen;
+
+// PCem's gd5429_start_blit as a resumable engine: count == -1 initializes
+// (and returns for CPU-fed blits, which stream data in via memory writes);
+// positive counts consume that many bits/pixels of CPU data. Screen-to-screen
+// blits run to completion in one call. State lives in the caller's Blt so a
+// CPU-fed blit persists across trap invocations.
+void __time_critical_func(cl_blit_exec)(Vga::Blt &blt, uint32_t cpu_dat, int count)
 {
     int x_max = cl_blt_x_max(blt);
-    blt.dst_addr_backup = blt.dst_addr;
-    blt.src_addr_backup = blt.src_addr;
-    blt.width_backup = blt.width;
-    blt.height_internal = blt.height;
-    blt.x_count = 0;
-    blt.y_count = ((blt.mode & 0xc0) == 0xc0) ? (int)(blt.src_addr & 7u) : 0;
+    int blt_mask = blt.mask & 7;
+    if (blt.depth == 1) {
+        blt_mask *= 2;
+    }
 
-    if (blt.mode & 0x04) {
+    if (count == -1) {
+        blt.dst_addr_backup = blt.dst_addr;
+        blt.src_addr_backup = blt.src_addr;
+        blt.width_backup = blt.width;
+        blt.height_internal = blt.height;
+        blt.x_count = 0;
+        blt.y_count = ((blt.mode & 0xc0) == 0xc0) ? (int)(blt.src_addr & 7u) : 0;
+        if (blt.mode & 0x04) {
+            // CPU-fed: wait for data from the host.
+            return;
+        }
+    } else if (blt.height_internal == 0xffffu) {
         return;
     }
 
-    while (blt.height_internal != 0xffffu) {
+    while (count) {
         uint8_t src = 0;
+        uint8_t dst;
         int mask = 0;
-        int shift;
-        if (blt.depth == 3) {
-            shift = (blt.x_count & 3) * 8;
-        } else if (blt.depth == 1) {
-            shift = (blt.x_count & 1) * 8;
-        } else {
-            shift = 0;
-        }
+        int shift = (blt.depth == 1) ? ((blt.x_count & 1) * 8) : 0;
 
-        switch (blt.mode & 0xc0) {
-        case 0x00:
-            src = vram_load(blt.src_addr);
-            blt.src_addr += (blt.mode & 1) ? -1 : 1;
-            mask = 1;
-            break;
-        case 0x40:
-            src = vram_load((blt.src_addr & ~7u) + ((uint32_t)blt.y_count << 3) +
-                            ((uint32_t)blt.x_count & 7u));
-            mask = 1;
-            break;
-        case 0x80:
-            mask = vram_load(blt.src_addr) & (0x80 >> blt.x_count);
-            src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
-            break;
-        case 0xc0:
-            mask = vram_load((blt.src_addr & ~7u) | (uint32_t)blt.y_count) &
-                   (0x80 >> (blt.depth == 0 ? blt.x_count :
-                             (blt.depth == 1 ? (blt.x_count >> 1) : (blt.x_count >> 2))));
-            src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
-            break;
+        if (blt.mode & 0x04) {
+            if (blt.mode & 0x80) {
+                mask = (int)(cpu_dat & 0x80u);
+                if (blt.depth == 0) {
+                    src = mask ? (uint8_t)blt.fg_col : (uint8_t)blt.bg_col;
+                    cpu_dat <<= 1;
+                    count--;
+                } else {
+                    src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
+                    if (blt.x_count & 1) {
+                        cpu_dat <<= 1;
+                        count--;
+                    }
+                }
+            } else {
+                src = (uint8_t)cpu_dat;
+                cpu_dat >>= 8;
+                count -= 8;
+                mask = 1;
+            }
+        } else {
+            switch (blt.mode & 0xc0) {
+            case 0x00:
+                src = vram_load(blt.src_addr);
+                blt.src_addr += (blt.mode & 1) ? -1 : 1;
+                mask = 1;
+                break;
+            case 0x40:
+                if (blt.depth == 1) {
+                    src = vram_load((blt.src_addr & ~3u) + ((uint32_t)blt.y_count << 4) +
+                                    ((uint32_t)blt.x_count & 15u));
+                } else {
+                    src = vram_load((blt.src_addr & ~7u) + ((uint32_t)blt.y_count << 3) +
+                                    ((uint32_t)blt.x_count & 7u));
+                }
+                mask = 1;
+                break;
+            case 0x80:
+                if (blt.depth == 1) {
+                    mask = vram_load(blt.src_addr) & (0x80 >> (blt.x_count >> 1));
+                } else {
+                    mask = vram_load(blt.src_addr) & (0x80 >> blt.x_count);
+                }
+                src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
+                break;
+            case 0xc0:
+                if (blt.depth == 1) {
+                    mask = vram_load((blt.src_addr & ~7u) | (uint32_t)blt.y_count) &
+                           (0x80 >> (blt.x_count >> 1));
+                } else {
+                    mask = vram_load((blt.src_addr & ~7u) | (uint32_t)blt.y_count) &
+                           (0x80 >> blt.x_count);
+                }
+                src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
+                break;
+            }
+            count--;
         }
 
         uint32_t dst_addr = blt.dst_addr & vga.vrammask;
-        uint8_t dst = vram_load(dst_addr);
-        if (mask) {
-            dst = cl_apply_rop(src, dst, blt.rop);
+        dst = vram_load(dst_addr);
+        dst = cl_apply_rop(src, dst, blt.rop);
+
+        // First-column clip from the mask register; transparent color expand
+        // (mode bit 3) skips background pixels - PCem 5429 semantics.
+        if ((uint16_t)(blt.width_backup - blt.width) >= blt_mask &&
+            !((blt.mode & 0x08) && !mask)) {
             vram_store(dst_addr, dst);
         }
 
@@ -1828,11 +2126,17 @@ void __time_critical_func(cl_run_blit)(Vga::Blt blt)
             blt.x_count = 0;
             blt.y_count = (blt.mode & 1) ? ((blt.y_count - 1) & 7) : ((blt.y_count + 1) & 7);
             --blt.height_internal;
+            if (blt.height_internal == 0xffffu) {
+                request_display_dirty();
+                return;
+            }
+            if (blt.mode & 0x04) {
+                cpu_blit_line_done = true;
+                return;
+            }
         }
     }
-    request_display_dirty();
 }
-
 
 // Blits execute synchronously inside the trap while VRAM is all internal
 // SRAM. With the PSRAM tier active a large blit inside one wait-stated ISA
@@ -1848,6 +2152,9 @@ volatile bool blit_busy;
 
 inline bool __time_critical_func(cl_blit_busy)()
 {
+    if (__atomic_load_n(&cpu_blit_active, __ATOMIC_ACQUIRE)) {
+        return true;
+    }
 #if PICOGRAPH_ENABLE_PSRAM
     if constexpr (kVramTierEnabled) {
         return __atomic_load_n(&blit_busy, __ATOMIC_ACQUIRE);
@@ -1858,17 +2165,28 @@ inline bool __time_critical_func(cl_blit_busy)()
 
 void __time_critical_func(cl_request_blit)()
 {
+    if (vga.blt.mode & 0x04) {
+        cpu_blt = vga.blt;
+        cpu_stream_pos = 0;
+        cpu_align_skip = false;
+        cpu_blit_line_done = false;
+        cl_blit_exec(cpu_blt, 0, -1);
+        __atomic_store_n(&cpu_blit_active, true, __ATOMIC_RELEASE);
+        return;
+    }
 #if PICOGRAPH_ENABLE_PSRAM
     if constexpr (kVramTierEnabled) {
         if (tier_active) {
             pending_blit = vga.blt;
+            pending_blit_reset_gen = __atomic_load_n(&blit_reset_gen, __ATOMIC_ACQUIRE);
             __atomic_store_n(&blit_busy, true, __ATOMIC_RELEASE);
             __atomic_fetch_add(&blit_requested, 1u, __ATOMIC_RELEASE);
             return;
         }
     }
 #endif
-    cl_run_blit(vga.blt);
+    Vga::Blt work = vga.blt;
+    cl_blit_exec(work, 0, -1);
 }
 
 #if PICOGRAPH_ENABLE_PSRAM
@@ -1881,8 +2199,16 @@ void handle_pending_blit()
             return;
         }
         blit_handled = requests;
+        if (__atomic_load_n(&blit_reset_gen, __ATOMIC_ACQUIRE) != pending_blit_reset_gen) {
+            // BLT was reset (GR31[2]) after this request was queued.
+            if (__atomic_load_n(&blit_requested, __ATOMIC_ACQUIRE) == blit_handled) {
+                __atomic_store_n(&blit_busy, false, __ATOMIC_RELEASE);
+            }
+            return;
+        }
         tier_cache_core0.invalidate();
-        cl_run_blit(pending_blit);
+        Vga::Blt work = pending_blit;
+        cl_blit_exec(work, 0, -1);
         if (__atomic_load_n(&blit_requested, __ATOMIC_ACQUIRE) == blit_handled) {
             __atomic_store_n(&blit_busy, false, __ATOMIC_RELEASE);
         }
@@ -1958,6 +2284,12 @@ void cl_mmio_write(uint32_t address, uint8_t val)
         vga.blt.rop = val;
         break;
     case 0x40:
+        if (val & 0x04) {
+            // BLT Reset: terminate anything queued or streaming.
+            __atomic_fetch_add(&blit_reset_gen, 1u, __ATOMIC_RELEASE);
+            __atomic_store_n(&cpu_blit_active, false, __ATOMIC_RELEASE);
+            break;
+        }
         if (val & 0x02) {
             cl_request_blit();
         }
@@ -1968,7 +2300,7 @@ void cl_mmio_write(uint32_t address, uint8_t val)
 uint8_t cl_mmio_read(uint32_t address)
 {
     if ((address & 0xffu) == 0x40) {
-        return cl_blit_busy() ? 0x08 : 0x00;
+        return cl_blit_busy() ? 0x0b : 0x00;
     }
     return 0xff;
 }
@@ -2101,7 +2433,7 @@ void __time_critical_func(vga_out)(uint16_t addr, uint8_t val)
                 mark_cursor_cell_dirty(old_cursor);
             }
         }
-        if (crtc_reg_affects_timing(index)) {
+        if (index < 0x0e || index > 0x10) {
             request_timing_recalc();
         }
         if (crtc_reg_affects_pixels(index)) {
@@ -2165,8 +2497,12 @@ uint8_t __time_critical_func(vga_in)(uint16_t addr)
     case 0x3ce:
         return vga.gdcaddr;
     case 0x3cf:
-        if ((vga.gdcaddr & 0x3f) == 0x31 && cl_blit_busy()) {
-            return (uint8_t)(vga.gdcreg[0x31] | 0x08);
+        if ((vga.gdcaddr & 0x3f) == 0x31) {
+            // GR31: bit0 = BLT Status, bit1 = Start (cleared on completion),
+            // bit3 = Progress Status. All track the engine, not the last
+            // written value.
+            uint8_t base = (uint8_t)(vga.gdcreg[0x31] & ~0x0fu);
+            return cl_blit_busy() ? (uint8_t)(base | 0x0b) : base;
         }
         return vga.gdcreg[vga.gdcaddr & 0x3f];
     case 0x3d4:
@@ -2205,6 +2541,10 @@ bool __time_critical_func(vga_mem_read)(uint32_t address, uint8_t *data)
     if (!vga_vram_active(address)) {
         return false;
     }
+    if (__atomic_load_n(&cpu_blit_active, __ATOMIC_ACQUIRE)) {
+        *data = 0xff;
+        return true;
+    }
     if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
         *data = cl_mmio_read(address);
         return true;
@@ -2216,6 +2556,29 @@ bool __time_critical_func(vga_mem_read)(uint32_t address, uint8_t *data)
 void __time_critical_func(vga_mem_write)(uint32_t address, uint8_t data)
 {
     if (!vga_vram_active(address)) {
+        return;
+    }
+    if (__atomic_load_n(&cpu_blit_active, __ATOMIC_ACQUIRE)) {
+        uint32_t stream_index = cpu_stream_pos++;
+        if (cpu_align_skip) {
+            if (stream_index & 3u) {
+                return;
+            }
+            cpu_align_skip = false;
+        }
+        cl_blit_exec(cpu_blt, data, 8);
+        if (cpu_blit_line_done) {
+            cpu_blit_line_done = false;
+            // Direct system-to-screen copies are DWORD-granular per
+            // scanline; color-expand scanlines continue at the next byte
+            // (TRM D8: expand discards only to the end of the current byte).
+            if (!(cpu_blt.mode & 0x80) && (cpu_stream_pos & 3u)) {
+                cpu_align_skip = true;
+            }
+        }
+        if (cpu_blt.height_internal == 0xffffu) {
+            __atomic_store_n(&cpu_blit_active, false, __ATOMIC_RELEASE);
+        }
         return;
     }
     if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
