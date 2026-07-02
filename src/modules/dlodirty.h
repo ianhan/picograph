@@ -165,6 +165,8 @@ private:
     unsigned mode_stable_height_ = 0;
     unsigned mode_stable_frames_ = 0;
     bool mode_switch_failed_ = false;
+    bool mode_switch_checked_ = false;
+    bool mode_switch_disabled_ = false;
 
     struct LineMeasure {
         uint32_t hash;

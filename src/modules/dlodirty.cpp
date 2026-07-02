@@ -109,6 +109,8 @@ void DloDirtyDisplay::reset(unsigned max_width, unsigned max_lines, GCCOLOR *lin
     mode_stable_height_ = 0;
     mode_stable_frames_ = 0;
     mode_switch_failed_ = false;
+    mode_switch_checked_ = false;
+    mode_switch_disabled_ = false;
     for (unsigned page = 0; page < kPageCount; ++page) {
         page_base[page] = 0;
         page_clear_pending[page] = true;
@@ -1408,6 +1410,19 @@ void DloDirtyDisplay::maybe_switch_display_mode(PGC pGC)
     long gc_width = GCWidth(pGC);
     long gc_height = GCHeight(pGC);
     if (gc_width <= 0 || gc_height <= 0) {
+        return;
+    }
+    if (!mode_switch_checked_) {
+        mode_switch_checked_ = true;
+        // A display that comes up in 800x480 is a small fixed-native panel:
+        // every source fits into that raster via the window scaler, and mode
+        // switching would only fight the panel. Stay put permanently.
+        mode_switch_disabled_ = (gc_width == 800 && gc_height == 480);
+        if (mode_switch_disabled_) {
+            printf("%s: 800x480 native panel, dynamic modes disabled\n", log_prefix_);
+        }
+    }
+    if (mode_switch_disabled_) {
         return;
     }
     unsigned want_width = 0;
