@@ -11,3 +11,6 @@
 [submodule "lib/gc"]
 	path = lib/gc
 	url = https://www.github.com/ianhan/gc
+[submodule "lib/tusb_libdlo"]
+	path = lib/tusb_libdlo
+	url = https://www.github.com/ianhan/tusb_libdlo

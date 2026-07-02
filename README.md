@@ -16,7 +16,7 @@ PicoGraph is a Pico 2 mounted on a PicoMEM 1.4, running custom firmware that hos
 
 ## DisplayLink/libdlo
 
-This project has a heavily modified version of the libdlo DisplayLink library - first for TinyUSB support a couple of years ago, and later for run-length encoding.
+The DisplayLink support lives in [tusb_libdlo](https://github.com/ianhan/tusb_libdlo), a heavily modified libdlo - first ported to TinyUSB a couple of years ago, later extended with run-length and mixed encodings, 16bpp scanout, and pipelined USB writes. It is included here as a submodule.
 USB 2.0 DisplayLink adapters (DL-1x0 and DL-1x5) are supported.
 
 ## License

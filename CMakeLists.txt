@@ -96,26 +96,13 @@ if(PICOGRAPH_ENABLE_DISPLAYLINK)
     if(NOT PICOGRAPH_ENABLE_USB_HOST)
         message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires PICOGRAPH_ENABLE_USB_HOST")
     endif()
-    if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/libdlo/CMakeLists.txt)
-        message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires lib/libdlo")
+    if(NOT EXISTS ${CMAKE_CURRENT_LIST_DIR}/lib/tusb_libdlo/src/CMakeLists.txt)
+        message(FATAL_ERROR "PICOGRAPH_ENABLE_DISPLAYLINK requires the lib/tusb_libdlo submodule")
     endif()
-    add_subdirectory(lib/libdlo)
-    if(TARGET libdlo AND NOT TARGET tusb_libdlo)
-        add_library(tusb_libdlo ALIAS libdlo)
-    endif()
-    if(TARGET libdlo)
-        target_compile_definitions(libdlo INTERFACE
-            DLO_USB_COMMAND_BUFFER_SIZE=${PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE}
-            DLO_16BPP_SCANOUT=$<BOOL:${PICOGRAPH_DISPLAYLINK_16BPP}>
-            DLO_ENABLE_HOST_UPLOAD_RLX=$<BOOL:${PICOGRAPH_DISPLAYLINK_RLX}>
-        )
-    else()
-        target_compile_definitions(tusb_libdlo INTERFACE
-            DLO_USB_COMMAND_BUFFER_SIZE=${PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE}
-            DLO_16BPP_SCANOUT=$<BOOL:${PICOGRAPH_DISPLAYLINK_16BPP}>
-            DLO_ENABLE_HOST_UPLOAD_RLX=$<BOOL:${PICOGRAPH_DISPLAYLINK_RLX}>
-        )
-    endif()
+    set(TUSB_LIBDLO_COMMAND_BUFFER_SIZE "${PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE}" CACHE STRING "USB command buffer size" FORCE)
+    set(TUSB_LIBDLO_16BPP_SCANOUT "${PICOGRAPH_DISPLAYLINK_16BPP}" CACHE BOOL "16bpp scanout mode" FORCE)
+    set(TUSB_LIBDLO_RLX "${PICOGRAPH_DISPLAYLINK_RLX}" CACHE BOOL "af 6b mixed raw/run-length encoding" FORCE)
+    add_subdirectory(lib/tusb_libdlo)
 endif()
 
 if(PICOGRAPH_ENABLE_GC)
@@ -230,7 +217,6 @@ if(PICOGRAPH_ENABLE_DISPLAYLINK)
         GCDLO_FORCED_RES_WIDTH=${PICOGRAPH_DISPLAYLINK_WIDTH}
         GCDLO_FORCED_RES_HEIGHT=${PICOGRAPH_DISPLAYLINK_HEIGHT}
         GCDLO_FORCED_RES_HZ=${PICOGRAPH_DISPLAYLINK_REFRESH}
-        CFG_TUH_API_EDPT_XFER=1
     )
 else()
     target_compile_definitions(picograph PRIVATE PICOGRAPH_ENABLE_DISPLAYLINK=0)
