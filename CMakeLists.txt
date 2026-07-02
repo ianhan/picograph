@@ -38,6 +38,7 @@ set(PICOGRAPH_DISPLAYLINK_REFRESH "${PICOGRAPH_DISPLAYLINK_REFRESH_DEFAULT}" CAC
 set(PICOGRAPH_DISPLAYLINK_COMMAND_BUFFER_SIZE "65472" CACHE STRING "DisplayLink USB command buffer size")
 set(PICOGRAPH_DISPLAYLINK_16BPP ON CACHE BOOL "Run the DisplayLink device in 16bpp scanout mode (skips the 8bpp fine-detail plane)")
 set(PICOGRAPH_DISPLAYLINK_RLX ON CACHE BOOL "Use the af 6b mixed raw/run-length encoding for DisplayLink pixel uploads")
+set(PICOGRAPH_DISPLAYLINK_SCALE_TO_FIT "FIT" CACHE STRING "Scale guest content to the output mode: OFF (center at 1:1), FIT (native width, fill height, crop oversize), FILL (stretch)")
 set(PICOGRAPH_DISPLAYLINK_DYNAMIC_MODE ON CACHE BOOL "Switch the DisplayLink mode to fit the guest's stable geometry (720x400 text, SVGA modes, ...)")
 set(PICOGRAPH_DISPLAYLINK_DEVICE_MB "2" CACHE STRING "DisplayLink adapter memory in MB; bounds how many flip pages fit per mode (DL-115/120: 2, DL-1x5/160: 16)")
 set(PICOGRAPH_REALTIME_STATUS ON CACHE BOOL "Extrapolate the video status register from the wall clock when the scanline engine lags, so host retrace loops never see frozen timing")
@@ -221,6 +222,7 @@ if(PICOGRAPH_ENABLE_DISPLAYLINK)
         PICOGRAPH_DISPLAYLINK_REFRESH=${PICOGRAPH_DISPLAYLINK_REFRESH}
         PICOGRAPH_DISPLAYLINK_16BPP=$<BOOL:${PICOGRAPH_DISPLAYLINK_16BPP}>
         PICOGRAPH_DISPLAYLINK_DYNAMIC_MODE=$<BOOL:${PICOGRAPH_DISPLAYLINK_DYNAMIC_MODE}>
+        PICOGRAPH_DISPLAYLINK_SCALE_TO_FIT=$<IF:$<STREQUAL:${PICOGRAPH_DISPLAYLINK_SCALE_TO_FIT},FILL>,2,$<IF:$<STREQUAL:${PICOGRAPH_DISPLAYLINK_SCALE_TO_FIT},FIT>,1,0>>
         GCDLO_PIN_NATIVE_800X480=1
         GCDLO_FORCED_RES_WIDTH=${PICOGRAPH_DISPLAYLINK_WIDTH}
         GCDLO_FORCED_RES_HEIGHT=${PICOGRAPH_DISPLAYLINK_HEIGHT}

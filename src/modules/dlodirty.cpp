@@ -111,6 +111,9 @@ void DloDirtyDisplay::reset(unsigned max_width, unsigned max_lines, GCCOLOR *lin
     mode_switch_failed_ = false;
     mode_switch_checked_ = false;
     mode_switch_disabled_ = false;
+    crop_left_ = 0;
+    crop_top_ = 0;
+    crop_mode_ = false;
     for (unsigned page = 0; page < kPageCount; ++page) {
         page_base[page] = 0;
         page_clear_pending[page] = true;
@@ -290,6 +293,46 @@ uint32_t DloDirtyDisplay::downscale_line_in_place(unsigned src_width, unsigned t
         hash *= 16777619u;
     }
     return hash;
+}
+
+// Nearest-neighbor horizontal upscale, right-to-left so every source pixel
+// is read before it is overwritten. Hash/fill measurement runs afterwards
+// over the scaled line with the ordinary left-to-right functions.
+void DloDirtyDisplay::upscale_line_in_place(unsigned src_width, unsigned target_width)
+{
+    if (!line_buffer_ || src_width == 0 || target_width <= src_width ||
+        target_width > max_width_) {
+        return;
+    }
+    for (unsigned x = target_width; x-- != 0;) {
+        line_buffer_[x] = line_buffer_[x * src_width / target_width];
+    }
+}
+
+uint32_t DloDirtyDisplay::scaled_line_hash(unsigned width, unsigned target_width)
+{
+    if (target_width == width) {
+        return measure_line_hash(line_buffer_, target_width);
+    }
+    if (target_width < width) {
+        return downscale_line_in_place(width, target_width);
+    }
+    upscale_line_in_place(width, target_width);
+    return measure_line_hash(line_buffer_, target_width);
+}
+
+DloDirtyDisplay::LineMeasure DloDirtyDisplay::scaled_line_hash_and_fill(unsigned width,
+                                                                        unsigned target_width,
+                                                                        unsigned fill_stop_bytes)
+{
+    if (target_width == width) {
+        return measure_line_hash_and_fill(line_buffer_, target_width, fill_stop_bytes);
+    }
+    if (target_width < width) {
+        return downscale_line_in_place_and_measure(width, target_width, fill_stop_bytes);
+    }
+    upscale_line_in_place(width, target_width);
+    return measure_line_hash_and_fill(line_buffer_, target_width, fill_stop_bytes);
 }
 
 DloDirtyDisplay::LineMeasure DloDirtyDisplay::downscale_line_in_place_and_measure(unsigned src_width,
@@ -1079,10 +1122,43 @@ bool DloDirtyDisplay::update_window(RenderContext *ctx,
     new_canvas_width = std::min<unsigned>(new_canvas_width ? new_canvas_width : width, max_width_);
     new_canvas_height = std::min<unsigned>(new_canvas_height ? new_canvas_height : height, max_lines_);
 
-    unsigned visible_canvas_width = std::min<unsigned>(new_canvas_width, (unsigned)gc_width);
-    unsigned visible_canvas_height = std::min<unsigned>(new_canvas_height, (unsigned)gc_height);
+    // The live GC dimensions are the canvas; the passed canvas values only
+    // participate in layout-change tracking. (Modules that predate dynamic
+    // modes still pass compile-time constants - centering inside a stale
+    // smaller box anchors content in the top-left corner of the real
+    // screen.)
+    unsigned visible_canvas_width = (unsigned)gc_width;
+    unsigned visible_canvas_height = (unsigned)gc_height;
+#if PICOGRAPH_DISPLAYLINK_SCALE_TO_FIT == 2
+    // Fill: stretch both axes to the canvas.
+    crop_left_ = 0;
+    crop_top_ = 0;
+    crop_mode_ = false;
+    target_width_px = std::min<unsigned>(visible_canvas_width, max_width_);
+    target_height_px = std::min<unsigned>(visible_canvas_height, max_lines_);
+#elif PICOGRAPH_DISPLAYLINK_SCALE_TO_FIT == 1
+    // Fit: pixels are never resampled horizontally. A source that fits the
+    // canvas keeps its native width and stretches vertically to fill (the
+    // era presentation: 640x400 fills 480 lines, 640x480 passes through,
+    // 720x480 shows all 720 columns). A source larger than the canvas
+    // displays 1:1, centered, with the overflow cropped.
+    crop_left_ = 0;
+    crop_top_ = 0;
+    crop_mode_ = false;
+    if (width <= visible_canvas_width && height <= visible_canvas_height) {
+        target_width_px = std::min<unsigned>(width, max_width_);
+        target_height_px = std::min<unsigned>(visible_canvas_height, max_lines_);
+    } else {
+        crop_mode_ = true;
+        target_width_px = std::min<unsigned>(std::min(width, visible_canvas_width), max_width_);
+        target_height_px = std::min<unsigned>(std::min(height, visible_canvas_height), max_lines_);
+        crop_left_ = (width - target_width_px) / 2u;
+        crop_top_ = (height - target_height_px) / 2u;
+    }
+#else
     target_width_px = std::min<unsigned>(width, visible_canvas_width);
     target_height_px = std::min<unsigned>(height, visible_canvas_height);
+#endif
     target_origin_x_px = (visible_canvas_width > target_width_px) ?
                          (visible_canvas_width - target_width_px) / 2u :
                          0u;
@@ -1144,7 +1220,21 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
     unsigned source_end = std::min<unsigned>(src_line + std::max(1u, src_span), source_height);
     unsigned target_y0;
     unsigned target_y1;
-    if (target_height == source_height) {
+    if (crop_mode_) {
+        // 1:1 centered window into the source; lines outside are discarded.
+        if (src_line < crop_top_ || src_line >= crop_top_ + target_height) {
+            return;
+        }
+        if (crop_left_ != 0 && width > target_width) {
+            std::memmove(line_buffer_, line_buffer_ + crop_left_,
+                         (size_t)target_width * sizeof(GCCOLOR));
+        }
+        if (width > target_width) {
+            width = target_width;
+        }
+        target_y0 = src_line - crop_top_;
+        target_y1 = std::min<unsigned>(target_y0 + std::max(1u, src_span), target_height);
+    } else if (target_height == source_height) {
         target_y0 = src_line;
         target_y1 = source_end;
     } else {
@@ -1175,21 +1265,15 @@ void DloDirtyDisplay::draw_line(RenderContext *ctx,
     bool fill_bytes_measured = false;
     if (render_full_frame) {
         if (line_width_[page][buffer_line] == target_width) {
-            hash = (target_width == width) ?
-                   measure_line_hash(line_buffer_, target_width) :
-                   downscale_line_in_place(width, target_width);
+            hash = scaled_line_hash(width, target_width);
         } else {
-            LineMeasure measure = (target_width == width) ?
-                                  measure_line_hash_and_fill(line_buffer_, target_width, raw_total_bytes) :
-                                  downscale_line_in_place_and_measure(width, target_width, raw_total_bytes);
+            LineMeasure measure = scaled_line_hash_and_fill(width, target_width, raw_total_bytes);
             hash = measure.hash;
             fill_bytes = measure.fill_bytes;
             fill_bytes_measured = true;
         }
     } else {
-        LineMeasure measure = (target_width == width) ?
-                              measure_line_hash_and_fill(line_buffer_, target_width, raw_total_bytes) :
-                              downscale_line_in_place_and_measure(width, target_width, raw_total_bytes);
+        LineMeasure measure = scaled_line_hash_and_fill(width, target_width, raw_total_bytes);
         hash = measure.hash;
         fill_bytes = measure.fill_bytes;
         fill_bytes_measured = true;

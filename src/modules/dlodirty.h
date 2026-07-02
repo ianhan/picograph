@@ -161,6 +161,9 @@ private:
 
     bool page_flipping_enabled() const { return page_count >= 2; }
 
+    unsigned crop_left_ = 0;
+    unsigned crop_top_ = 0;
+    bool crop_mode_ = false;
     unsigned mode_stable_width_ = 0;
     unsigned mode_stable_height_ = 0;
     unsigned mode_stable_frames_ = 0;
@@ -183,6 +186,9 @@ private:
     LineMeasure measure_line_hash_and_fill(const GCCOLOR *data, unsigned width, unsigned fill_stop_bytes) const;
     void advance_scaled_sample(unsigned *sample_x, unsigned *error, unsigned source_width, unsigned target_width) const;
     uint32_t downscale_line_in_place(unsigned source_width, unsigned target_width);
+    void upscale_line_in_place(unsigned source_width, unsigned target_width);
+    uint32_t scaled_line_hash(unsigned width, unsigned target_width);
+    LineMeasure scaled_line_hash_and_fill(unsigned width, unsigned target_width, unsigned fill_stop_bytes);
     LineMeasure downscale_line_in_place_and_measure(unsigned source_width, unsigned target_width, unsigned fill_stop_bytes);
     unsigned measure_line_fill_bytes(const GCCOLOR *data, unsigned width, unsigned fill_stop_bytes) const;
 
