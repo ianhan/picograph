@@ -85,6 +85,13 @@ struct Vga {
     uint8_t vgapal[256][3];
     uint8_t egapal[16];
     GCCOLOR *pallook;
+    // Raw palette state (vgapal/pallook256/egapal/dac_mask) is updated from
+    // the IO traps on core 1; the render palettes below are rebuilt by core 0
+    // once per frame so every rendered frame uses one consistent palette
+    // (otherwise palette fades tear mid-frame).
+    volatile uint32_t palette_generation;
+    uint32_t palette_generation_handled;
+    GCCOLOR render_pallook[256];
     GCCOLOR active_palette[16];
 
     int vtotal, dispend, vsyncstart, split, vblankstart;
@@ -306,11 +313,26 @@ void vga_recalctimings(Vga *e)
     __atomic_store_n(&e->dispofftime, scanout::time_from_chars(dispofftime, hz, char_width), __ATOMIC_RELEASE);
 }
 
-void __time_critical_func(refresh_active_palette)(Vga *e)
+// Rebuild the frame-latched render palettes from the raw state. Runs on
+// core 0 at frame start (and from init); never from the IO traps.
+void refresh_active_palette(Vga *e)
 {
-    for (int c = 0; c < 16; ++c) {
-        e->active_palette[c] = e->pallook[e->egapal[c]];
+    if (!e->pallook) {
+        return;
     }
+    for (int c = 0; c < 256; ++c) {
+        e->render_pallook[c] = e->pallook[(uint8_t)(c & e->dac_mask)];
+    }
+    for (int c = 0; c < 16; ++c) {
+        e->active_palette[c] = e->pallook[e->egapal[c] & e->dac_mask];
+    }
+}
+
+// Called wherever raw palette state changes; the rebuild happens at the next
+// frame boundary on core 0.
+inline void __time_critical_func(mark_palette_dirty)(Vga *e)
+{
+    __atomic_fetch_add(&e->palette_generation, 1u, __ATOMIC_RELEASE);
 }
 
 void __time_critical_func(rebuild_egapal)(Vga *e)
@@ -322,7 +344,7 @@ void __time_critical_func(rebuild_egapal)(Vga *e)
             e->egapal[c] = (e->attrregs[c] & 0x3f) | ((e->attrregs[0x14] & 0x0c) << 4);
         }
     }
-    refresh_active_palette(e);
+    mark_palette_dirty(e);
 }
 
 inline uint8_t __time_critical_func(vram_load)(uint32_t addr)
@@ -647,7 +669,7 @@ void vga_draw_4bpp(Vga *e, unsigned width)
 
 void vga_draw_8bpp(Vga *e, unsigned width)
 {
-    const GCCOLOR *palette = e->pallook;
+    const GCCOLOR *palette = e->render_pallook;
     unsigned out = 0;
 
     if (e->lowres) {
@@ -929,6 +951,11 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         e->sc = e->crtc[8] & 0x1f;
         e->dispon = 1;
         e->displine = 0;
+        uint32_t palette_gen = __atomic_load_n(&e->palette_generation, __ATOMIC_ACQUIRE);
+        if (palette_gen != e->palette_generation_handled) {
+            e->palette_generation_handled = palette_gen;
+            refresh_active_palette(e);
+        }
         e->scrollcache = e->attrregs[0x13] & 7;
         e->linecountff = 0;
     }
@@ -1252,9 +1279,7 @@ void set_dac_entry(uint8_t index, uint8_t r, uint8_t g, uint8_t b)
     pallook256[index] = makecol((uint8_t)((r & 0x3fu) * 4u),
                                 (uint8_t)((g & 0x3fu) * 4u),
                                 (uint8_t)((b & 0x3fu) * 4u));
-    if (vga.pallook) {
-        refresh_active_palette(&vga);
-    }
+    mark_palette_dirty(&vga);
 }
 
 void cl_update_writemode()
@@ -1771,6 +1796,7 @@ void __time_critical_func(vga_out)(uint16_t addr, uint8_t val)
         }
         vga.dac_3c6_count = 0;
         vga.dac_mask = val;
+        mark_palette_dirty(&vga);
         request_display_dirty();
         break;
     case 0x3c7:
@@ -2041,6 +2067,7 @@ void init()
     cl_recalc_banking(&vga);
     cl_recalc_mapping(&vga);
     rebuild_egapal(&vga);
+    refresh_active_palette(&vga);
     vga_recalctimings(&vga);
 
     xsize = 1;

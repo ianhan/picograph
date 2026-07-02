@@ -85,6 +85,12 @@ struct Ega {
 
     uint8_t egapal[16];
     GCCOLOR *pallook;
+    // Raw palette state (egapal/pallook) is updated from the IO traps on
+    // core 1; active_palette is rebuilt by core 0 once per frame so every
+    // rendered frame uses one consistent palette (otherwise palette fades
+    // tear mid-frame).
+    volatile uint32_t palette_generation;
+    uint32_t palette_generation_handled;
     GCCOLOR active_palette[16];
 
     int vtotal, dispend, vsyncstart, split;
@@ -236,11 +242,20 @@ void ega_recalctimings(Ega *e)
     __atomic_store_n(&e->dispofftime, scanout::time_from_chars(dispofftime, hz * 8u, char_width), __ATOMIC_RELEASE);
 }
 
-void __time_critical_func(refresh_active_palette)(Ega *e)
+// Rebuild the frame-latched render palette from the raw state. Runs on
+// core 0 at frame start (and from init); never from the IO traps.
+void refresh_active_palette(Ega *e)
 {
     for (int c = 0; c < 16; ++c) {
         e->active_palette[c] = e->pallook[e->egapal[c]];
     }
+}
+
+// Called wherever raw palette state changes; the rebuild happens at the next
+// frame boundary on core 0.
+inline void __time_critical_func(mark_palette_dirty)(Ega *e)
+{
+    __atomic_fetch_add(&e->palette_generation, 1u, __ATOMIC_RELEASE);
 }
 
 void __time_critical_func(rebuild_egapal)(Ega *e)
@@ -252,7 +267,7 @@ void __time_critical_func(rebuild_egapal)(Ega *e)
             e->egapal[c] = (e->attrregs[c] & 0x3f) | ((e->attrregs[0x14] & 0x0c) << 4);
         }
     }
-    refresh_active_palette(e);
+    mark_palette_dirty(e);
 }
 
 inline uint8_t __time_critical_func(vram_load)(uint32_t addr)
@@ -766,6 +781,11 @@ uint32_t ega_poll(Ega *e, RenderContext *ctx)
         e->sc = e->crtc[8] & 0x1f;
         e->dispon = 1;
         e->displine = 0;
+        uint32_t palette_gen = __atomic_load_n(&e->palette_generation, __ATOMIC_ACQUIRE);
+        if (palette_gen != e->palette_generation_handled) {
+            e->palette_generation_handled = palette_gen;
+            refresh_active_palette(e);
+        }
         e->scrollcache = e->attrregs[0x13] & 7;
     }
     if (e->sc == (e->crtc[10] & 31)) {
@@ -1018,7 +1038,7 @@ void __time_critical_func(ega_out)(uint16_t addr, uint8_t val)
         egaswitchread = val & 0x0c;
         ega.vres = !(val & 0x80);
         ega.pallook = ega.vres ? pallook16 : pallook64;
-        refresh_active_palette(&ega);
+        mark_palette_dirty(&ega);
         ega.vidclock = val & 4;
         ega.miscout = val;
         if (old_vidclock != ega.vidclock) {
@@ -1262,6 +1282,7 @@ void init()
     ega.dispon = 1;
     egaswitches = kDefaultMonitorType & 0x0f;
     rebuild_egapal(&ega);
+    refresh_active_palette(&ega);
     ega_recalctimings(&ega);
 
     xsize = 1;
