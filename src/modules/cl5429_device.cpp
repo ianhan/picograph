@@ -332,8 +332,6 @@ void cl_recalc_banking(Vga *e)
     } else {
         e->bank[1] = e->bank[0] + 0x8000u;
     }
-    e->bank[0] &= e->vrammask;
-    e->bank[1] &= e->vrammask;
 }
 
 void cl_recalc_mapping(Vga *e)
@@ -346,7 +344,7 @@ void cl_recalc_mapping(Vga *e)
 uint32_t cl_banked_offset(uint32_t address)
 {
     uint32_t offset = address & vga.banked_mask;
-    return ((offset & 0x7fffu) + vga.bank[(offset >> 15) & 1u]) & vga.vrammask;
+    return (offset & 0x7fffu) + vga.bank[(offset >> 15) & 1u];
 }
 
 void handle_deferred_requests()
@@ -435,20 +433,16 @@ void vga_recalctimings(Vga *e)
         uint32_t n = e->seqregs[0x0b + clock_sel] & 0x7f;
         uint32_t d = (e->seqregs[0x1b + clock_sel] >> 1) & 0x1f;
         uint32_t post = (e->seqregs[0x1b + clock_sel] & 1) ? 2u : 1u;
-        if (n && d) {
-            uint64_t vclk = (14318184ull * n) / (d * post);
-            switch (e->seqregs[7] & 6) {
-            case 2:
-                vclk /= 2;
-                break;
-            case 4:
-                vclk /= 3;
-                break;
-            }
-            hz = (uint32_t)vclk;
-        } else {
-            hz = e->vidclock ? kVgaPixelClock1Hz : kVgaPixelClock0Hz;
+        uint64_t vclk = (n && d) ? (14318184ull * n) / (d * post) : 14318184ull;
+        switch (e->seqregs[7] & 6) {
+        case 2:
+            vclk /= 2;
+            break;
+        case 4:
+            vclk /= 3;
+            break;
         }
+        hz = (uint32_t)vclk;
         if (hz < 1000000u) {
             hz = kVgaPixelClock0Hz;
         }
@@ -570,9 +564,6 @@ unsigned current_line_width(const Vga *e)
     if (!(e->gdcreg[6] & 1) && !(e->attrregs[0x10] & 1)) {
         return std::min<unsigned>((unsigned)e->hdisp * text_char_width(e), kMaxVgaWidth);
     }
-    if ((e->gdcreg[5] & 0x60) == 0x20) {
-        return std::min<unsigned>((unsigned)e->hdisp * 16u, kMaxVgaWidth);
-    }
     if (e->seqregs[1] & 8) {
         return std::min<unsigned>((unsigned)e->hdisp * 16u, kMaxVgaWidth);
     }
@@ -640,9 +631,10 @@ void vga_draw_text(Vga *e)
         }
 
         uint8_t dat = vram_load(charaddr + ((uint32_t)e->sc << 2));
+        unsigned pan = (e->scrollcache & 7u) * scale;
         unsigned base = (unsigned)x * cw;
         GCCOLOR ninth_color = (((chr & ~0x1f) == 0xc0) && (e->attrregs[0x10] & 4) && (dat & 1)) ? fg : bg;
-        if (base + cw <= kMaxVgaWidth) {
+        if (pan == 0 && base + cw <= kMaxVgaWidth) {
             GCCOLOR *dst = line_buffer + base;
             if (scale == 1) {
                 dst[0] = (dat & 0x80u) ? fg : bg;
@@ -670,13 +662,13 @@ void vga_draw_text(Vga *e)
         } else {
             for (unsigned bit = 0; bit < 8; ++bit) {
                 GCCOLOR color = (dat & (0x80u >> bit)) ? fg : bg;
-                for (unsigned s = 0; s < scale; ++s) {
-                    put_pixel(base + bit * scale + s, color);
+                for (unsigned sd = 0; sd < scale; ++sd) {
+                    put_pixel(base + bit * scale + sd - pan, color);
                 }
             }
             if (nine_dot) {
-                for (unsigned s = 0; s < scale; ++s) {
-                    put_pixel(base + 8 * scale + s, ninth_color);
+                for (unsigned sd = 0; sd < scale; ++sd) {
+                    put_pixel(base + 8 * scale + sd - pan, ninth_color);
                 }
             }
         }
@@ -689,7 +681,9 @@ uint32_t vga_remap_address(const Vga *e, uint32_t in_addr)
 {
     uint32_t out_addr;
     if (e->crtc[0x14] & 0x40) {
-        out_addr = ((in_addr << 2) & 0x3fff0u) | ((in_addr >> 14) & 0x0cu) | (in_addr & ~0x3ffffu);
+        out_addr = e->packed_chain4
+                       ? in_addr
+                       : ((in_addr << 2) & 0x3fff0u) | ((in_addr >> 14) & 0x0cu) | (in_addr & ~0x3ffffu);
     } else if (e->crtc[0x17] & 0x40) {
         out_addr = in_addr;
     } else if (e->crtc[0x17] & 0x20) {
@@ -711,6 +705,27 @@ void vga_draw_2bpp(Vga *e, unsigned width)
     int hscroll = (e->scrollcache & 7) << 1;
     constexpr uint32_t step = 4u;
     const GCCOLOR *palette = e->active_palette;
+    if (!(e->seqregs[1] & 8)) {
+        // Full dot rate: 8 single-width pixels per pair of bytes.
+        int pan = e->scrollcache & 7;
+        std::fill(line_buffer, line_buffer + width, palette[0]);
+        unsigned out = 0;
+        while (out < width + (unsigned)pan) {
+            uint32_t addr = vga_remap_address(e, e->ma);
+            uint8_t ed0 = vram_load(addr);
+            uint8_t ed1 = vram_load(addr | 1u);
+            e->ma = (e->ma + step) & e->vrammask;
+            for (int shift = 6; shift >= 0; shift -= 2) {
+                put_visible_pixel((int)out - pan, width, palette[(ed0 >> shift) & 3]);
+                ++out;
+            }
+            for (int shift = 6; shift >= 0; shift -= 2) {
+                put_visible_pixel((int)out - pan, width, palette[(ed1 >> shift) & 3]);
+                ++out;
+            }
+        }
+        return;
+    }
     if (hscroll == 0) {
         unsigned visible_groups = std::min<unsigned>((unsigned)e->hdisp, width / 16u);
         for (unsigned x = 0; x < visible_groups; ++x) {
@@ -1023,6 +1038,8 @@ void draw_current_line(RenderContext *ctx, Vga *e)
         vga_draw_text(e);
     } else if (e->truecolor_bpp) {
         vga_draw_truecolor(e, width);
+    } else if (e->seqregs[7] & 1) {
+        vga_draw_8bpp(e, width);
     } else if ((e->gdcreg[5] & 0x60) == 0x20) {
         vga_draw_2bpp(e, width);
     } else if (e->gdcreg[5] & 0x40) {
@@ -1182,9 +1199,6 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         } else if (e->sc == e->rowcount) {
             e->linecountff = 0;
             e->sc = 0;
-            if (e->sc == (e->crtc[11] & 31)) {
-                e->con = 0;
-            }
             e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vram_display_mask;
             if (e->interlace) {
                 e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vram_display_mask;
@@ -1197,10 +1211,15 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
             e->ma = e->maback;
         }
     }
+    e->hsync_divisor = !e->hsync_divisor;
+    if (e->hsync_divisor && (e->crtc[0x17] & 4)) {
+        return scanout::delay_us(e, scanout::load_dispontime(e));
+    }
     e->vc++;
     e->vc &= 2047;
     if (e->vc == e->split) {
         e->ma = e->maback = 0;
+        e->sc = 0;
         if (e->attrregs[0x10] & 0x20) {
             e->scrollcache = 0;
         }
@@ -1339,6 +1358,10 @@ bool __time_critical_func(vga_vram_active)(uint32_t address)
     if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
         return true;
     }
+    if (vga.seqregs[7] & 0xf0) {
+        // Linear aperture enabled: the banked window stops decoding.
+        return false;
+    }
     switch (vga.gdcreg[6] & 0x0c) {
     case 0x00:
     case 0x04:
@@ -1419,7 +1442,7 @@ int __time_critical_func(mark_graphics_vram_write_dirty)(uint32_t address)
 bool __time_critical_func(vga_write)(uint32_t addr, uint8_t val, bool track_changes)
 {
     uint8_t vala, valb, valc, vald;
-    int writemask2 = vga.writemask;
+    int writemask2 = vga.seqregs[2];
     bool changed = false;
 
     addr = normalize_vram_write_address(addr, &writemask2);
@@ -1603,7 +1626,8 @@ uint8_t __time_critical_func(vga_read)(uint32_t addr)
     }
 
     addr = normalize_vram_address(addr, &readplane);
-    if (cl_packed_linear(&vga)) {
+    if (cl_packed_linear(&vga) &&
+        !(vga.gdcreg[0x0b] & (kClGrbEnhanced16Bit | kClGrbX8Addressing))) {
         // Packed linear reads return the byte directly without disturbing
         // the latches, as the real chip (and PCem) do.
         if (addr >= vga.vram_limit) {
@@ -1644,9 +1668,9 @@ uint8_t __time_critical_func(vga_read)(uint32_t addr)
 
 void set_dac_entry(uint8_t index, uint8_t r, uint8_t g, uint8_t b)
 {
-    vga.vgapal[index][0] = r & 0x3fu;
-    vga.vgapal[index][1] = g & 0x3fu;
-    vga.vgapal[index][2] = b & 0x3fu;
+    vga.vgapal[index][0] = r;
+    vga.vgapal[index][1] = g;
+    vga.vgapal[index][2] = b;
     pallook256[index] = makecol((uint8_t)((r & 0x3fu) * 4u),
                                 (uint8_t)((g & 0x3fu) * 4u),
                                 (uint8_t)((b & 0x3fu) * 4u));
@@ -1679,8 +1703,8 @@ void cl_write_sequencer_data(uint8_t val)
 {
     uint8_t index = vga.seqaddr & 0x3f;
     if (vga.seqaddr > 5) {
-        uint8_t old = vga.seqregs[index];
-        vga.seqregs[index] = val;
+        uint8_t old = vga.seqregs[vga.seqaddr & 0x1f];
+        vga.seqregs[vga.seqaddr & 0x1f] = val;
         switch (vga.seqaddr & 0x1f) {
         case 0x07:
             vga.packed_chain4 = val & 1u;
@@ -1794,7 +1818,7 @@ uint8_t cl_read_sequencer_address()
 uint8_t cl_read_sequencer_data()
 {
     if (vga.seqaddr > 5) {
-        switch (vga.seqaddr & 0x3f) {
+        switch (vga.seqaddr) {
         case 0x06:
             return ((vga.seqregs[6] & 0x17u) == 0x12u) ? 0x12u : 0x0fu;
         case 0x17: {
@@ -1814,9 +1838,11 @@ uint8_t cl_mmio_read(uint32_t address);
 
 void cl_write_graphics_data(uint8_t val)
 {
-    uint8_t index = vga.gdcaddr & 0x3f;
-    uint8_t old = vga.gdcreg[index];
-    vga.gdcreg[index] = val;
+    // Side effects decode the unmasked index (PCem parity): aliases >= 0x40
+    // store into the mirrored register but trigger nothing.
+    uint8_t index = vga.gdcaddr;
+    uint8_t old = vga.gdcreg[vga.gdcaddr & 0x3f];
+    vga.gdcreg[vga.gdcaddr & 0x3f] = val;
 
     switch (index) {
     case 0:
@@ -1968,7 +1994,7 @@ uint8_t cl_apply_rop(uint8_t src, uint8_t dst, uint8_t rop)
     case 0xda:
         return (uint8_t)~(src & dst);
     default:
-        return src;
+        return dst;
     }
 }
 
@@ -2187,6 +2213,7 @@ void __time_critical_func(cl_request_blit)()
 #endif
     Vga::Blt work = vga.blt;
     cl_blit_exec(work, 0, -1);
+    vga.blt = work;
 }
 
 #if PICOGRAPH_ENABLE_PSRAM
@@ -2288,7 +2315,6 @@ void cl_mmio_write(uint32_t address, uint8_t val)
             // BLT Reset: terminate anything queued or streaming.
             __atomic_fetch_add(&blit_reset_gen, 1u, __ATOMIC_RELEASE);
             __atomic_store_n(&cpu_blit_active, false, __ATOMIC_RELEASE);
-            break;
         }
         if (val & 0x02) {
             cl_request_blit();
@@ -2343,12 +2369,9 @@ void __time_critical_func(vga_out)(uint16_t addr, uint8_t val)
         break;
     case 0x3c2:
     {
-        uint8_t old_vidclock = vga.vidclock;
         vga.vidclock = val & 4;
         vga.miscout = val;
-        if (old_vidclock != vga.vidclock) {
-            request_timing_recalc();
-        }
+        request_timing_recalc();
         break;
     }
     case 0x3c4:
@@ -2512,14 +2535,20 @@ uint8_t __time_critical_func(vga_in)(uint16_t addr)
         case 0x27:
             return 0x9c;
         case 0x28:
-            return 0x00;
+            return vga.crtc[0x28];
         default:
             return vga.crtc[vga.crtcreg];
         }
-    case 0x3da:
+    case 0x3da: {
         vga.attrff = 0;
-        vga.stat ^= 0x30;
-        return scanout::extrapolate_stat(vga, vga.stat);
+        uint8_t stat = scanout::extrapolate_stat(vga, vga.stat);
+        if (stat & 0x01) {
+            vga.stat &= (uint8_t)~0x30u;
+        } else {
+            vga.stat ^= 0x30;
+        }
+        return (uint8_t)((stat & (uint8_t)~0x30u) | (vga.stat & 0x30));
+    }
     default:
         return 0xff;
     }
@@ -2541,12 +2570,12 @@ bool __time_critical_func(vga_mem_read)(uint32_t address, uint8_t *data)
     if (!vga_vram_active(address)) {
         return false;
     }
-    if (__atomic_load_n(&cpu_blit_active, __ATOMIC_ACQUIRE)) {
-        *data = 0xff;
-        return true;
-    }
     if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
         *data = cl_mmio_read(address);
+        return true;
+    }
+    if (__atomic_load_n(&cpu_blit_active, __ATOMIC_ACQUIRE)) {
+        *data = 0xff;
         return true;
     }
     *data = vga_read(cl_banked_offset(address));
@@ -2556,6 +2585,10 @@ bool __time_critical_func(vga_mem_read)(uint32_t address, uint8_t *data)
 void __time_critical_func(vga_mem_write)(uint32_t address, uint8_t data)
 {
     if (!vga_vram_active(address)) {
+        return;
+    }
+    if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
+        cl_mmio_write(address, data);
         return;
     }
     if (__atomic_load_n(&cpu_blit_active, __ATOMIC_ACQUIRE)) {
@@ -2579,10 +2612,6 @@ void __time_critical_func(vga_mem_write)(uint32_t address, uint8_t data)
         if (cpu_blt.height_internal == 0xffffu) {
             __atomic_store_n(&cpu_blit_active, false, __ATOMIC_RELEASE);
         }
-        return;
-    }
-    if (vga.mmio_enabled && address >= 0xb8000 && address < 0xb8100) {
-        cl_mmio_write(address, data);
         return;
     }
     uint32_t offset = cl_banked_offset(address);

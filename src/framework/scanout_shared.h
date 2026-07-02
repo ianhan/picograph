@@ -160,7 +160,11 @@ PICOGRAPH_SCANOUT_INLINE uint8_t extrapolate_stat(const Dev &dev, uint8_t stat)
         stat |= 0x01;
     }
     uint32_t vsyncstart = (uint32_t)dev.vsyncstart;
-    if (line >= vsyncstart && line < vsyncstart + 4u) {
+    uint32_t vsync_len = ((uint32_t)dev.crtc[0x11] - vsyncstart) & 15u;
+    if (vsync_len == 0) {
+        vsync_len = 16;
+    }
+    if (line >= vsyncstart && line < vsyncstart + vsync_len) {
         stat |= 0x08;
     }
     return stat;
