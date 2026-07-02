@@ -668,12 +668,16 @@ void publish_frame(Ega *e)
     unsigned scale = (height > 0 && height <= 240) ? 2u : 1u;
     unsigned width = current_line_width(e);
     unsigned source_height = std::min<unsigned>((unsigned)height * scale, kMaxEgaLines);
+    unsigned canvas_w, canvas_h;
+    scanout::canvas_size(&canvas_w, &canvas_h,
+                         PICOGRAPH_DISPLAYLINK_WIDTH,
+                         PICOGRAPH_DISPLAYLINK_HEIGHT);
     display.publish_frame(e->firstline,
                           width,
                           source_height,
                           scale,
-                          PICOGRAPH_DISPLAYLINK_WIDTH,
-                          PICOGRAPH_DISPLAYLINK_HEIGHT);
+                          canvas_w,
+                          canvas_h);
 
     e->frames++;
     e->video_res_x = xsize;

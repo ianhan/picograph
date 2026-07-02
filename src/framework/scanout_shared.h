@@ -396,6 +396,22 @@ PICOGRAPH_SCANOUT_INLINE bool rom_read(uint32_t address,
     return true;
 }
 
+/* ---- canvas ------------------------------------------------------------- */
+
+// The live DisplayLink canvas once a device is up (it changes under dynamic
+// mode selection), falling back to the configured boot mode before that.
+inline void canvas_size(unsigned *width, unsigned *height, unsigned fallback_width, unsigned fallback_height)
+{
+    PGC pGC = GCDisplay();
+    if (pGC && pGC->bitmap.handle && GCWidth(pGC) > 0 && GCHeight(pGC) > 0) {
+        *width = (unsigned)GCWidth(pGC);
+        *height = (unsigned)GCHeight(pGC);
+    } else {
+        *width = fallback_width;
+        *height = fallback_height;
+    }
+}
+
 /* ---- module tick --------------------------------------------------------- */
 
 template <typename DeferredFn, typename AdvanceFn>
@@ -412,6 +428,9 @@ inline void tick(DloDirtyDisplay &display, DeferredFn &&deferred, AdvanceFn &&ad
         display.end_access(&ctx);
     }
     display.present_pending(pGC);
+#if PICOGRAPH_DISPLAYLINK_DYNAMIC_MODE
+    display.maybe_switch_display_mode(pGC);
+#endif
 }
 
 }  // namespace scanout

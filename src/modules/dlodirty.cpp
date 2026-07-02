@@ -1,5 +1,18 @@
 #include "modules/dlodirty.h"
 
+// From gcdlo; gc.h has no include guard, so declare directly rather than
+// pulling in gcdlo.h after dlodirty.h has already included gc.h.
+extern "C" {
+GCBOOL GCDisplayLinkPickModeFor(GC *gc,
+                                unsigned src_width,
+                                unsigned src_height,
+                                unsigned *width,
+                                unsigned *height,
+                                unsigned *refresh);
+GCBOOL GCDisplayLinkSetModeFor(GC *gc, unsigned width, unsigned height, unsigned refresh);
+unsigned long GCDisplayLinkDeviceMemoryFor(GC *gc);
+}
+
 #include "pico/platform/sections.h"
 
 #include <algorithm>
@@ -91,6 +104,11 @@ void DloDirtyDisplay::reset(unsigned max_width, unsigned max_lines, GCCOLOR *lin
     visible_page = 0;
     pending_page = kInvalidPage;
     draw_page = 0;
+    page_count = kPageCount;
+    mode_stable_width_ = 0;
+    mode_stable_height_ = 0;
+    mode_stable_frames_ = 0;
+    mode_switch_failed_ = false;
     for (unsigned page = 0; page < kPageCount; ++page) {
         page_base[page] = 0;
         page_clear_pending[page] = true;
@@ -661,7 +679,7 @@ uint32_t DloDirtyDisplay::next_content_generation()
 
 bool DloDirtyDisplay::clone_page(RenderContext *ctx, unsigned src_page, unsigned dest_page)
 {
-    if (!kEnablePageFlipping) {
+    if (!page_flipping_enabled()) {
         return false;
     }
 
@@ -708,7 +726,7 @@ unsigned DloDirtyDisplay::current_clone_source() const
     if (page_is_current(visible_page)) {
         return visible_page;
     }
-    for (unsigned page = 0; page < kPageCount; ++page) {
+    for (unsigned page = 0; page < page_count; ++page) {
         if (page_is_current(page)) {
             return page;
         }
@@ -795,6 +813,20 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
         return false;
     }
 
+    // Only as many pages as actually fit in device memory at this mode;
+    // one page means no flipping (and no tear protection), which beats
+    // painting into memory the device doesn't have.
+    unsigned new_page_count = 1;
+    if (kEnablePageFlipping) {
+        unsigned long device_memory = GCDisplayLinkDeviceMemoryFor(pGC);
+        if (device_memory) {
+            unsigned long fit = device_memory / frame_bytes;
+            new_page_count = (unsigned)std::min<unsigned long>(std::max<unsigned long>(fit, 1), kPageCount);
+        } else {
+            new_page_count = kPageCount;
+        }
+    }
+
     for (unsigned page = 0; page < kPageCount; ++page) {
         if (page_base[page] != frame_bytes * page) {
             bases_match = false;
@@ -802,19 +834,24 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
         }
     }
 
-    page_mode_matches = kEnablePageFlipping ||
-                        (!present_pending_flag &&
-                         visible_page == 0 &&
-                         draw_page == 0);
+    page_mode_matches = new_page_count == page_count &&
+                        (page_flipping_enabled() ||
+                         (!present_pending_flag &&
+                          visible_page == 0 &&
+                          draw_page == 0));
     if (pages_ready && bases_match && page_mode_matches) {
         return true;
     }
 
+    if (new_page_count != page_count) {
+        printf("%s: %u device page(s) of %lu bytes\n", log_prefix_, new_page_count, (unsigned long)frame_bytes);
+    }
+    page_count = new_page_count;
     for (unsigned page = 0; page < kPageCount; ++page) {
         page_base[page] = frame_bytes * page;
     }
     visible_page = 0;
-    draw_page = kEnablePageFlipping ? 1u : 0u;
+    draw_page = page_flipping_enabled() ? 1u : 0u;
     pending_page = kInvalidPage;
     present_pending_flag = false;
     draw_page_needs_clone = false;
@@ -839,11 +876,11 @@ bool DloDirtyDisplay::setup_pages(PGC pGC)
 
 unsigned DloDirtyDisplay::choose_next_draw_page(unsigned fallback) const
 {
-    if (!kEnablePageFlipping) {
+    if (!page_flipping_enabled()) {
         return 0;
     }
 
-    for (unsigned page = 0; page < kPageCount; ++page) {
+    for (unsigned page = 0; page < page_count; ++page) {
         if (page == visible_page) {
             continue;
         }
@@ -855,7 +892,7 @@ unsigned DloDirtyDisplay::choose_next_draw_page(unsigned fallback) const
         }
     }
 
-    for (unsigned page = 0; page < kPageCount; ++page) {
+    for (unsigned page = 0; page < page_count; ++page) {
         if (page == visible_page) {
             continue;
         }
@@ -899,7 +936,7 @@ void DloDirtyDisplay::queue_frame(RenderContext *ctx)
         return;
     }
     if (pages_ready &&
-        kEnablePageFlipping &&
+        page_flipping_enabled() &&
         drop_partial_full_frames &&
         render_full_frame &&
         !render_full_frame_from_start) {
@@ -912,7 +949,7 @@ void DloDirtyDisplay::queue_frame(RenderContext *ctx)
         return;
     }
 
-    if (pages_ready && !kEnablePageFlipping) {
+    if (pages_ready && !page_flipping_enabled()) {
         queued_page = draw_page < kPageCount ? draw_page : 0u;
         visible_page = queued_page;
         pending_page = kInvalidPage;
@@ -964,7 +1001,7 @@ void DloDirtyDisplay::queue_frame(RenderContext *ctx)
 
 void DloDirtyDisplay::present_pending(PGC pGC)
 {
-    if (!kEnablePageFlipping) {
+    if (!page_flipping_enabled()) {
         pending_page = kInvalidPage;
         present_pending_flag = false;
         return;
@@ -1346,6 +1383,62 @@ void DloDirtyDisplay::publish_frame(int new_first_line,
                             draw_page_needs_current_contents &&
                             clone_source_available;
     render_frame = render_full_frame || dirty;
+
+    // Geometry stability for dynamic mode selection: the counter only grows
+    // while the guest publishes identical dimensions frame after frame.
+    if (new_source_width == mode_stable_width_ && new_source_height == mode_stable_height_) {
+        if (mode_stable_frames_ < 0xffffu) {
+            ++mode_stable_frames_;
+        }
+    } else {
+        mode_stable_width_ = new_source_width;
+        mode_stable_height_ = new_source_height;
+        mode_stable_frames_ = 0;
+        mode_switch_failed_ = false;
+    }
+}
+
+void DloDirtyDisplay::maybe_switch_display_mode(PGC pGC)
+{
+    if (!pGC || !pGC->bitmap.handle || mode_switch_failed_ || !frame_valid ||
+        mode_stable_frames_ < kModeSwitchStableFrames ||
+        mode_stable_width_ == 0 || mode_stable_height_ == 0) {
+        return;
+    }
+    long gc_width = GCWidth(pGC);
+    long gc_height = GCHeight(pGC);
+    if (gc_width <= 0 || gc_height <= 0) {
+        return;
+    }
+    unsigned want_width = 0;
+    unsigned want_height = 0;
+    unsigned want_refresh = 0;
+    if (!GCDisplayLinkPickModeFor(pGC,
+                                  mode_stable_width_,
+                                  mode_stable_height_,
+                                  &want_width,
+                                  &want_height,
+                                  &want_refresh)) {
+        return;
+    }
+    if ((long)want_width == gc_width && (long)want_height == gc_height) {
+        return;
+    }
+    printf("%s: mode switch %ldx%ld -> %ux%u@%u for %ux%u guest\n",
+           log_prefix_,
+           gc_width,
+           gc_height,
+           want_width,
+           want_height,
+           want_refresh,
+           mode_stable_width_,
+           mode_stable_height_);
+    if (!GCDisplayLinkSetModeFor(pGC, want_width, want_height, want_refresh)) {
+        // No retry until the guest changes geometry again.
+        mode_switch_failed_ = true;
+        return;
+    }
+    pages_ready = false;
 }
 
 }  // namespace picograph

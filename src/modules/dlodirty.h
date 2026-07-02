@@ -13,7 +13,7 @@ public:
     static constexpr unsigned kPageCount = 3;
     static constexpr unsigned kInvalidPage = kPageCount;
     static constexpr unsigned kMaxWidth = 1024;
-    static constexpr unsigned kMaxLines = 512;
+    static constexpr unsigned kMaxLines = 1024;
 
     struct RenderContext {
         PGC pGC;
@@ -109,6 +109,13 @@ public:
     unsigned max_width() const { return max_width_; }
     unsigned max_lines() const { return max_lines_; }
 
+    // Dynamic DisplayLink mode selection: publish_frame tracks how long the
+    // guest geometry has been stable; this switches the device to the
+    // tightest-fitting supported mode once it has settled (guests thrash the
+    // CRTC mid-mode-set, so never react to transients). Runs on core 0 from
+    // the module tick, after any pending page present.
+    void maybe_switch_display_mode(PGC pGC);
+
     int first_line = 0;
     unsigned source_width = 0;
     unsigned source_height = 0;
@@ -145,8 +152,20 @@ public:
     unsigned visible_page = 0;
     unsigned pending_page = kInvalidPage;
     unsigned draw_page = 0;
+    // Pages that actually fit in device memory at the current mode; page
+    // flipping degrades gracefully to a single page.
+    unsigned page_count = kPageCount;
 
 private:
+    static constexpr unsigned kModeSwitchStableFrames = 30;
+
+    bool page_flipping_enabled() const { return page_count >= 2; }
+
+    unsigned mode_stable_width_ = 0;
+    unsigned mode_stable_height_ = 0;
+    unsigned mode_stable_frames_ = 0;
+    bool mode_switch_failed_ = false;
+
     struct LineMeasure {
         uint32_t hash;
         unsigned fill_bytes;

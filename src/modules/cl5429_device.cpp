@@ -4,6 +4,10 @@
 #include "modules/dlodirty.h"
 #include "pcem_cl5429_bios_rom.h"
 
+#if PICOGRAPH_ENABLE_PSRAM
+#include "picograph/psram.h"
+#endif
+
 #include "hardware/timer.h"
 #include "pico/stdlib.h"
 
@@ -32,13 +36,31 @@ constexpr uint32_t kVgaRomSize = 0x00008000;
 #define PICOGRAPH_CL5429_MEMORY_KB 256
 #endif
 
-static_assert(PICOGRAPH_CL5429_MEMORY_KB == 256,
-              "PICOGRAPH_CL5429_MEMORY_KB is currently limited to 256 without PSRAM");
+// VRAM below this boundary lives in internal SRAM; anything above is backed
+// by the PicoMEM's SPI PSRAM. Lowering it artificially (CMake knob) routes
+// ordinary 256 KB modes through the PSRAM tier for testing.
+#ifndef PICOGRAPH_CL5429_INTERNAL_KB
+#define PICOGRAPH_CL5429_INTERNAL_KB 256
+#endif
 
 constexpr uint32_t kVgaVramSize = (uint32_t)PICOGRAPH_CL5429_MEMORY_KB * 1024u;
+constexpr uint32_t kVramInternalSize =
+    ((uint32_t)PICOGRAPH_CL5429_INTERNAL_KB * 1024u < kVgaVramSize)
+        ? (uint32_t)PICOGRAPH_CL5429_INTERNAL_KB * 1024u
+        : kVgaVramSize;
+constexpr bool kVramTierEnabled = kVgaVramSize > kVramInternalSize;
+
+static_assert((kVgaVramSize & (kVgaVramSize - 1u)) == 0, "VRAM size must be a power of two");
+static_assert((kVramInternalSize & (kVramInternalSize - 1u)) == 0,
+              "Internal VRAM size must be a power of two");
+static_assert(kVramInternalSize <= 256u * 1024u, "Internal VRAM tier is capped at 256 KB");
+#if !PICOGRAPH_ENABLE_PSRAM
+static_assert(!kVramTierEnabled,
+              "PICOGRAPH_CL5429_MEMORY_KB beyond the internal tier requires PICOGRAPH_ENABLE_PSRAM");
+#endif
 
 constexpr unsigned kMaxVgaWidth = 1024;
-constexpr unsigned kMaxVgaLines = 512;
+constexpr unsigned kMaxVgaLines = 1024;
 constexpr uint32_t kVgaPixelClock0Hz = 25175000u;
 constexpr uint32_t kVgaPixelClock1Hz = 28322000u;
 using scanout::kDirtyUnmapped;
@@ -97,6 +119,7 @@ struct Vga {
     int vtotal, dispend, vsyncstart, split, vblankstart;
     int hdisp, htotal, hdisp_time, rowoffset;
     int lowres, linedbl, rowcount;
+    int interlace, oddeven;
 
     uint64_t dispontime, dispofftime;
     uint32_t timer_frac;
@@ -126,7 +149,7 @@ struct Vga {
     uint8_t sr10_read, sr11_read;
     uint8_t latch_ext[4];
 
-    struct {
+    struct Blt {
         uint32_t bg_col, fg_col;
         uint16_t width, height;
         uint16_t dst_pitch, src_pitch;
@@ -145,7 +168,7 @@ struct Vga {
     int video_res_x, video_res_y, video_bpp;
     uint32_t frames;
 
-    uint8_t vram[kVgaVramSize];
+    uint8_t vram[kVramInternalSize];
 };
 
 using RenderContext = DloDirtyDisplay::RenderContext;
@@ -166,8 +189,90 @@ GCCOLOR makecol(uint8_t r, uint8_t g, uint8_t b)
     return RGB(r, g, b);
 }
 
+/* ---- PSRAM VRAM tier ---------------------------------------------------- */
 
+// VRAM offsets past kVramInternalSize live in the PicoMEM's SPI PSRAM, behind
+// small per-core direct-mapped read caches (16-byte lines: the PSRAM PIO
+// program's 8-bit bit counts cap a transaction at 31 bytes). Writes go
+// straight through and update the writing core's own cache. Coherency is
+// deliberately loose and matched to how the cores use VRAM:
+//  - core 1 (ISA traps) is the only writer outside blits; core 0's cache is
+//    flash-invalidated at the start of every rendered line, so a rendered
+//    line is at least as fresh as its render start — the dirty versioning
+//    re-renders anything written after that.
+//  - core 0 writes only while running a deferred blit; those bump a
+//    generation counter that core 1 checks on every tier access and
+//    flash-invalidates against.
+#if PICOGRAPH_ENABLE_PSRAM
 
+template <unsigned kLines>
+struct TierCache {
+    static constexpr uint32_t kLineBytes = 16;
+    static_assert((kLines & (kLines - 1u)) == 0, "line count must be a power of two");
+    uint32_t tag[kLines];
+    uint8_t data[kLines][kLineBytes];
+
+    void invalidate()
+    {
+        std::memset(tag, 0xff, sizeof(tag));
+    }
+};
+
+TierCache<256> tier_cache_core0;  // renderer + deferred blits: 5 KB
+TierCache<16> tier_cache_core1;   // ISA trap reads (latch quads, rep movsb): 320 B
+
+bool tier_active;
+volatile uint32_t tier_core0_write_gen;
+uint32_t tier_core1_seen_gen;
+
+template <unsigned kLines>
+inline uint8_t __time_critical_func(tier_cache_read)(TierCache<kLines> &cache, uint32_t addr)
+{
+    uint32_t line = addr / TierCache<kLines>::kLineBytes;
+    uint32_t idx = line & (kLines - 1u);
+    if (cache.tag[idx] != line) {
+        psram_read(line * TierCache<kLines>::kLineBytes, cache.data[idx],
+                   TierCache<kLines>::kLineBytes);
+        cache.tag[idx] = line;
+    }
+    return cache.data[idx][addr & (TierCache<kLines>::kLineBytes - 1u)];
+}
+
+template <unsigned kLines>
+inline void __time_critical_func(tier_cache_update)(TierCache<kLines> &cache, uint32_t addr, uint8_t val)
+{
+    uint32_t line = addr / TierCache<kLines>::kLineBytes;
+    uint32_t idx = line & (kLines - 1u);
+    if (cache.tag[idx] == line) {
+        cache.data[idx][addr & (TierCache<kLines>::kLineBytes - 1u)] = val;
+    }
+}
+
+inline uint8_t __time_critical_func(tier_read8)(uint32_t addr)
+{
+    if (get_core_num() == 0) {
+        return tier_cache_read(tier_cache_core0, addr);
+    }
+    uint32_t gen = __atomic_load_n(&tier_core0_write_gen, __ATOMIC_ACQUIRE);
+    if (gen != tier_core1_seen_gen) {
+        tier_cache_core1.invalidate();
+        tier_core1_seen_gen = gen;
+    }
+    return tier_cache_read(tier_cache_core1, addr);
+}
+
+inline void __time_critical_func(tier_write8)(uint32_t addr, uint8_t val)
+{
+    psram_write8(addr, val);
+    if (get_core_num() == 0) {
+        tier_cache_update(tier_cache_core0, addr, val);
+        __atomic_fetch_add(&tier_core0_write_gen, 1u, __ATOMIC_RELEASE);
+    } else {
+        tier_cache_update(tier_cache_core1, addr, val);
+    }
+}
+
+#endif  // PICOGRAPH_ENABLE_PSRAM
 
 
 void vga_recalctimings(Vga *e);
@@ -278,6 +383,12 @@ void vga_recalctimings(Vga *e)
         e->rowoffset = 0x100;
     }
     e->lowres = e->attrregs[0x10] & 0x40;
+    // Cirrus extended packed-pixel (SR7.0): 8bpp at full dot rate, even with
+    // the VGA lowres attribute set — PCem forces the highres renderer here.
+    if (e->seqregs[7] & 0x01) {
+        e->lowres = 0;
+    }
+    e->interlace = e->crtc[0x1a] & 1;
     e->linedbl = e->crtc[9] & 0x80;
     e->rowcount = e->crtc[9] & 31;
 
@@ -349,22 +460,60 @@ void __time_critical_func(rebuild_egapal)(Vga *e)
 
 inline uint8_t __time_critical_func(vram_load)(uint32_t addr)
 {
-    return scanout::vram_load(vga, addr);
+    uint32_t masked = addr & vga.vrammask;
+#if PICOGRAPH_ENABLE_PSRAM
+    if constexpr (kVramTierEnabled) {
+        if (masked >= kVramInternalSize) {
+            return tier_read8(masked);
+        }
+    }
+#endif
+    return __atomic_load_n(&vga.vram[masked], __ATOMIC_RELAXED);
 }
 
 inline void __time_critical_func(vram_store)(uint32_t addr, uint8_t val)
 {
-    scanout::vram_store(vga, addr, val);
+    uint32_t masked = addr & vga.vrammask;
+#if PICOGRAPH_ENABLE_PSRAM
+    if constexpr (kVramTierEnabled) {
+        if (masked >= kVramInternalSize) {
+            tier_write8(masked, val);
+            return;
+        }
+    }
+#endif
+    __atomic_store_n(&vga.vram[masked], val, __ATOMIC_RELAXED);
 }
 
 inline bool __time_critical_func(vram_store_changed)(uint32_t addr, uint8_t val)
 {
-    return scanout::vram_store_changed(vga, addr, val);
+    uint32_t masked = addr & vga.vrammask;
+#if PICOGRAPH_ENABLE_PSRAM
+    if constexpr (kVramTierEnabled) {
+        // Skip the read-back on the PSRAM tier and report every store as a
+        // change: the per-line hashes already stop no-op uploads, and this
+        // halves the transactions in a stretched ISA cycle.
+        if (masked >= kVramInternalSize) {
+            tier_write8(masked, val);
+            return true;
+        }
+    }
+#endif
+    uint8_t old = __atomic_load_n(&vga.vram[masked], __ATOMIC_RELAXED);
+    if (old == val) {
+        return false;
+    }
+    __atomic_store_n(&vga.vram[masked], val, __ATOMIC_RELAXED);
+    return true;
 }
 
 inline void __time_critical_func(vram_store_write)(uint32_t addr, uint8_t val, bool track_changes, bool *changed)
 {
-    scanout::vram_store_write(vga, addr, val, track_changes, changed);
+    if (track_changes) {
+        *changed |= vram_store_changed(addr, val);
+    } else {
+        vram_store(addr, val);
+    }
 }
 
 unsigned text_char_width(const Vga *e)
@@ -778,6 +927,15 @@ void draw_current_line(RenderContext *ctx, Vga *e)
         display.ensure_draw_page_ready_for_partial(ctx);
     }
 
+#if PICOGRAPH_ENABLE_PSRAM
+    // A dirty line must render from data at least as fresh as this point;
+    // anything the guest writes after it re-dirties the line via versioning.
+    if constexpr (kVramTierEnabled) {
+        if (tier_active) {
+            tier_cache_core0.invalidate();
+        }
+    }
+#endif
     uint32_t rendered_version = display_line_dirty_version((unsigned)e->displine);
     if (e->scrblank || !e->attr_palette_enable) {
         std::fill(line_buffer, line_buffer + width, makecol(0, 0, 0));
@@ -812,12 +970,16 @@ void publish_frame(Vga *e)
     unsigned scale = (height > 0 && height <= 240) ? 2u : 1u;
     unsigned width = current_line_width(e);
     unsigned source_height = std::min<unsigned>((unsigned)height * scale, kMaxVgaLines);
+    unsigned canvas_w, canvas_h;
+    scanout::canvas_size(&canvas_w, &canvas_h,
+                         PICOGRAPH_DISPLAYLINK_WIDTH,
+                         PICOGRAPH_DISPLAYLINK_HEIGHT);
     display.publish_frame(e->firstline,
                           width,
                           source_height,
                           scale,
-                          PICOGRAPH_DISPLAYLINK_WIDTH,
-                          PICOGRAPH_DISPLAYLINK_HEIGHT);
+                          canvas_w,
+                          canvas_h);
 
     e->frames++;
     e->video_res_x = xsize;
@@ -872,11 +1034,14 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
             }
         }
         e->displine++;
+        if (e->interlace) {
+            e->displine++;
+        }
         if ((e->stat & 8) && ((e->displine & 15) == (e->crtc[0x11] & 15)) && e->vslines) {
             e->stat &= (uint8_t)~8u;
         }
         e->vslines++;
-        if (e->displine > 500) {
+        if (e->displine > (int)kMaxVgaLines + 64) {
             e->displine = 0;
         }
         return scanout::delay_us(e, scanout::load_dispofftime(e));
@@ -900,6 +1065,9 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
                 e->con = 0;
             }
             e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vrammask;
+            if (e->interlace) {
+                e->maback = (e->maback + ((uint32_t)e->rowoffset << 3)) & e->vrammask;
+            }
             e->ma = e->maback;
         } else {
             e->linecountff = 0;
@@ -928,6 +1096,14 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
     if (e->vc == e->vsyncstart) {
         e->dispon = 0;
         e->stat |= 8;
+        // Each interlaced field covers alternate lines; stretch the extents
+        // so both fields publish the same full-frame geometry.
+        if (e->interlace && !e->oddeven) {
+            e->lastline++;
+        }
+        if (e->interlace && e->oddeven) {
+            e->firstline--;
+        }
         x = (int)current_line_width(e);
         if (x != xsize || (e->lastline - e->firstline) != ysize) {
             xsize = x;
@@ -939,7 +1115,11 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         publish_frame(e);
         e->firstline = 2000;
         e->lastline = 0;
+        e->oddeven ^= 1;
         e->maback = e->ma = (e->crtc[0xc] << 8) | e->crtc[0xd];
+        if (e->interlace && e->oddeven) {
+            e->maback = e->ma = e->ma + ((uint32_t)e->rowoffset << 1);
+        }
         e->ca = (e->crtc[0xe] << 8) | e->crtc[0xf];
         e->ma <<= 2;
         e->maback <<= 2;
@@ -950,7 +1130,7 @@ uint32_t vga_poll(Vga *e, RenderContext *ctx)
         e->vc = 0;
         e->sc = e->crtc[8] & 0x1f;
         e->dispon = 1;
-        e->displine = 0;
+        e->displine = (e->interlace && e->oddeven) ? 1 : 0;
         uint32_t palette_gen = __atomic_load_n(&e->palette_generation, __ATOMIC_ACQUIRE);
         if (palette_gen != e->palette_generation_handled) {
             e->palette_generation_handled = palette_gen;
@@ -1553,9 +1733,9 @@ uint8_t cl_apply_rop(uint8_t src, uint8_t dst, uint8_t rop)
     }
 }
 
-int cl_blt_x_max()
+int cl_blt_x_max(const Vga::Blt &blt)
 {
-    switch (vga.blt.depth) {
+    switch (blt.depth) {
     case 1:
         return 16;
     case 3:
@@ -1565,91 +1745,150 @@ int cl_blt_x_max()
     }
 }
 
-void __time_critical_func(cl_start_blit)()
+// Runs the blit engine against a private copy of the programmed state, so a
+// deferred run on core 0 never races the guest reprogramming the registers.
+void __time_critical_func(cl_run_blit)(Vga::Blt blt)
 {
-    int x_max = cl_blt_x_max();
-    vga.blt.dst_addr_backup = vga.blt.dst_addr;
-    vga.blt.src_addr_backup = vga.blt.src_addr;
-    vga.blt.width_backup = vga.blt.width;
-    vga.blt.height_internal = vga.blt.height;
-    vga.blt.x_count = 0;
-    vga.blt.y_count = ((vga.blt.mode & 0xc0) == 0xc0) ? (int)(vga.blt.src_addr & 7u) : 0;
+    int x_max = cl_blt_x_max(blt);
+    blt.dst_addr_backup = blt.dst_addr;
+    blt.src_addr_backup = blt.src_addr;
+    blt.width_backup = blt.width;
+    blt.height_internal = blt.height;
+    blt.x_count = 0;
+    blt.y_count = ((blt.mode & 0xc0) == 0xc0) ? (int)(blt.src_addr & 7u) : 0;
 
-    if (vga.blt.mode & 0x04) {
+    if (blt.mode & 0x04) {
         return;
     }
 
-    while (vga.blt.height_internal != 0xffffu) {
+    while (blt.height_internal != 0xffffu) {
         uint8_t src = 0;
         int mask = 0;
         int shift;
-        if (vga.blt.depth == 3) {
-            shift = (vga.blt.x_count & 3) * 8;
-        } else if (vga.blt.depth == 1) {
-            shift = (vga.blt.x_count & 1) * 8;
+        if (blt.depth == 3) {
+            shift = (blt.x_count & 3) * 8;
+        } else if (blt.depth == 1) {
+            shift = (blt.x_count & 1) * 8;
         } else {
             shift = 0;
         }
 
-        switch (vga.blt.mode & 0xc0) {
+        switch (blt.mode & 0xc0) {
         case 0x00:
-            src = vram_load(vga.blt.src_addr);
-            vga.blt.src_addr += (vga.blt.mode & 1) ? -1 : 1;
+            src = vram_load(blt.src_addr);
+            blt.src_addr += (blt.mode & 1) ? -1 : 1;
             mask = 1;
             break;
         case 0x40:
-            src = vram_load((vga.blt.src_addr & ~7u) + ((uint32_t)vga.blt.y_count << 3) +
-                            ((uint32_t)vga.blt.x_count & 7u));
+            src = vram_load((blt.src_addr & ~7u) + ((uint32_t)blt.y_count << 3) +
+                            ((uint32_t)blt.x_count & 7u));
             mask = 1;
             break;
         case 0x80:
-            mask = vram_load(vga.blt.src_addr) & (0x80 >> vga.blt.x_count);
-            src = mask ? (uint8_t)(vga.blt.fg_col >> shift) : (uint8_t)(vga.blt.bg_col >> shift);
+            mask = vram_load(blt.src_addr) & (0x80 >> blt.x_count);
+            src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
             break;
         case 0xc0:
-            mask = vram_load((vga.blt.src_addr & ~7u) | (uint32_t)vga.blt.y_count) &
-                   (0x80 >> (vga.blt.depth == 0 ? vga.blt.x_count :
-                             (vga.blt.depth == 1 ? (vga.blt.x_count >> 1) : (vga.blt.x_count >> 2))));
-            src = mask ? (uint8_t)(vga.blt.fg_col >> shift) : (uint8_t)(vga.blt.bg_col >> shift);
+            mask = vram_load((blt.src_addr & ~7u) | (uint32_t)blt.y_count) &
+                   (0x80 >> (blt.depth == 0 ? blt.x_count :
+                             (blt.depth == 1 ? (blt.x_count >> 1) : (blt.x_count >> 2))));
+            src = mask ? (uint8_t)(blt.fg_col >> shift) : (uint8_t)(blt.bg_col >> shift);
             break;
         }
 
-        uint32_t dst_addr = vga.blt.dst_addr & vga.vrammask;
+        uint32_t dst_addr = blt.dst_addr & vga.vrammask;
         uint8_t dst = vram_load(dst_addr);
         if (mask) {
-            dst = cl_apply_rop(src, dst, vga.blt.rop);
+            dst = cl_apply_rop(src, dst, blt.rop);
             vram_store(dst_addr, dst);
         }
 
-        vga.blt.dst_addr += (vga.blt.mode & 1) ? -1 : 1;
-        ++vga.blt.x_count;
-        if (vga.blt.x_count == x_max) {
-            vga.blt.x_count = 0;
-            if ((vga.blt.mode & 0xc0) == 0x80) {
-                ++vga.blt.src_addr;
+        blt.dst_addr += (blt.mode & 1) ? -1 : 1;
+        ++blt.x_count;
+        if (blt.x_count == x_max) {
+            blt.x_count = 0;
+            if ((blt.mode & 0xc0) == 0x80) {
+                ++blt.src_addr;
             }
         }
 
-        --vga.blt.width;
-        if (vga.blt.width == 0xffffu) {
-            vga.blt.width = vga.blt.width_backup;
-            vga.blt.dst_addr = vga.blt.dst_addr_backup =
-                vga.blt.dst_addr_backup + ((vga.blt.mode & 1) ? -(int32_t)vga.blt.dst_pitch : vga.blt.dst_pitch);
+        --blt.width;
+        if (blt.width == 0xffffu) {
+            blt.width = blt.width_backup;
+            blt.dst_addr = blt.dst_addr_backup =
+                blt.dst_addr_backup + ((blt.mode & 1) ? -(int32_t)blt.dst_pitch : blt.dst_pitch);
 
-            if ((vga.blt.mode & 0xc0) == 0x00) {
-                vga.blt.src_addr = vga.blt.src_addr_backup =
-                    vga.blt.src_addr_backup + ((vga.blt.mode & 1) ? -(int32_t)vga.blt.src_pitch : vga.blt.src_pitch);
-            } else if ((vga.blt.mode & 0xc0) == 0x80 && vga.blt.x_count != 0) {
-                ++vga.blt.src_addr;
+            if ((blt.mode & 0xc0) == 0x00) {
+                blt.src_addr = blt.src_addr_backup =
+                    blt.src_addr_backup + ((blt.mode & 1) ? -(int32_t)blt.src_pitch : blt.src_pitch);
+            } else if ((blt.mode & 0xc0) == 0x80 && blt.x_count != 0) {
+                ++blt.src_addr;
             }
 
-            vga.blt.x_count = 0;
-            vga.blt.y_count = (vga.blt.mode & 1) ? ((vga.blt.y_count - 1) & 7) : ((vga.blt.y_count + 1) & 7);
-            --vga.blt.height_internal;
+            blt.x_count = 0;
+            blt.y_count = (blt.mode & 1) ? ((blt.y_count - 1) & 7) : ((blt.y_count + 1) & 7);
+            --blt.height_internal;
         }
     }
     request_display_dirty();
 }
+
+
+// Blits execute synchronously inside the trap while VRAM is all internal
+// SRAM. With the PSRAM tier active a large blit inside one wait-stated ISA
+// cycle would stretch CHRDY for milliseconds, so the start request is queued
+// and core 0 runs it from tick; the guest sees a busy BLT engine via GR31
+// bit 3 (what real hardware did — ISA-era drivers poll it).
+#if PICOGRAPH_ENABLE_PSRAM
+Vga::Blt pending_blit;
+volatile uint32_t blit_requested;
+uint32_t blit_handled;
+volatile bool blit_busy;
+#endif
+
+inline bool __time_critical_func(cl_blit_busy)()
+{
+#if PICOGRAPH_ENABLE_PSRAM
+    if constexpr (kVramTierEnabled) {
+        return __atomic_load_n(&blit_busy, __ATOMIC_ACQUIRE);
+    }
+#endif
+    return false;
+}
+
+void __time_critical_func(cl_request_blit)()
+{
+#if PICOGRAPH_ENABLE_PSRAM
+    if constexpr (kVramTierEnabled) {
+        if (tier_active) {
+            pending_blit = vga.blt;
+            __atomic_store_n(&blit_busy, true, __ATOMIC_RELEASE);
+            __atomic_fetch_add(&blit_requested, 1u, __ATOMIC_RELEASE);
+            return;
+        }
+    }
+#endif
+    cl_run_blit(vga.blt);
+}
+
+#if PICOGRAPH_ENABLE_PSRAM
+// Core 0, called from tick between render steps.
+void handle_pending_blit()
+{
+    if constexpr (kVramTierEnabled) {
+        uint32_t requests = __atomic_load_n(&blit_requested, __ATOMIC_ACQUIRE);
+        if (requests == blit_handled) {
+            return;
+        }
+        blit_handled = requests;
+        tier_cache_core0.invalidate();
+        cl_run_blit(pending_blit);
+        if (__atomic_load_n(&blit_requested, __ATOMIC_ACQUIRE) == blit_handled) {
+            __atomic_store_n(&blit_busy, false, __ATOMIC_RELEASE);
+        }
+    }
+}
+#endif
 
 void cl_mmio_write(uint32_t address, uint8_t val)
 {
@@ -1720,7 +1959,7 @@ void cl_mmio_write(uint32_t address, uint8_t val)
         break;
     case 0x40:
         if (val & 0x02) {
-            cl_start_blit();
+            cl_request_blit();
         }
         break;
     }
@@ -1729,7 +1968,7 @@ void cl_mmio_write(uint32_t address, uint8_t val)
 uint8_t cl_mmio_read(uint32_t address)
 {
     if ((address & 0xffu) == 0x40) {
-        return 0;
+        return cl_blit_busy() ? 0x08 : 0x00;
     }
     return 0xff;
 }
@@ -1926,6 +2165,9 @@ uint8_t __time_critical_func(vga_in)(uint16_t addr)
     case 0x3ce:
         return vga.gdcaddr;
     case 0x3cf:
+        if ((vga.gdcaddr & 0x3f) == 0x31 && cl_blit_busy()) {
+            return (uint8_t)(vga.gdcreg[0x31] | 0x08);
+        }
         return vga.gdcreg[vga.gdcaddr & 0x3f];
     case 0x3d4:
         return vga.crtcreg;
@@ -2044,6 +2286,39 @@ void init()
     vga.pallook = pallook256;
     vga.vram_limit = kVgaVramSize;
     vga.vrammask = kVgaVramSize - 1u;
+
+#if PICOGRAPH_ENABLE_PSRAM
+    if constexpr (kVramTierEnabled) {
+        tier_active = psram_available() &&
+                      (uint32_t)psram_size_mb() * 1024u * 1024u >= kVgaVramSize;
+        if (tier_active) {
+            // Deterministic power-on contents for the PSRAM span, matching
+            // the zeroed internal tier.
+            static const uint8_t zeros[64] = {};
+            for (uint32_t addr = kVramInternalSize; addr < kVgaVramSize; addr += sizeof(zeros)) {
+                psram_write(addr, zeros, sizeof(zeros));
+            }
+        } else {
+            // No (or too little) PSRAM: fall back to the internal tier only.
+            // Every mask below keeps guest accesses inside it, so the tier
+            // paths are never reached.
+            vga.vram_limit = kVramInternalSize;
+            vga.vrammask = kVramInternalSize - 1u;
+        }
+        tier_cache_core0.invalidate();
+        tier_cache_core1.invalidate();
+        tier_core1_seen_gen = 0;
+        __atomic_store_n(&tier_core0_write_gen, 0u, __ATOMIC_RELEASE);
+        blit_handled = 0;
+        __atomic_store_n(&blit_requested, 0u, __ATOMIC_RELEASE);
+        __atomic_store_n(&blit_busy, false, __ATOMIC_RELEASE);
+        printf("cl5429: psram vram tier %s (%u KB internal + %u KB psram)\n",
+               tier_active ? "active" : "unavailable, clamped to internal",
+               (unsigned)(kVramInternalSize / 1024u),
+               tier_active ? (unsigned)((kVgaVramSize - kVramInternalSize) / 1024u) : 0u);
+    }
+#endif
+
     vga.decode_mask = 0x7fffffu;
     vga.banked_mask = 0xffffu;
     vga.bank[1] = 0x8000u;
@@ -2084,7 +2359,12 @@ void init()
 void tick()
 {
     scanout::tick(display,
-                  [] { handle_deferred_requests(); },
+                  [] {
+                      handle_deferred_requests();
+#if PICOGRAPH_ENABLE_PSRAM
+                      handle_pending_blit();
+#endif
+                  },
                   [](RenderContext *ctx) { vga_advance_state(ctx); });
 }
 
