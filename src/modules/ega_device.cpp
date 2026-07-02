@@ -660,8 +660,12 @@ void draw_current_line(RenderContext *ctx, Ega *e)
 
 void publish_frame(Ega *e)
 {
-    int height = std::max(0, e->lastline - e->firstline);
-    unsigned scale = (e->vres || height <= 200) ? 2u : 1u;
+    int height = (e->lastline >= e->firstline) ? (e->lastline - e->firstline + 1) : 0;
+    // Decide doubling from the rendered height alone: e->vres follows the
+    // miscout sync-polarity bit, which software toggles transiently during
+    // switch sensing, and a publish sampling that moment would force scale=2
+    // in a 350-line mode and truncate the frame.
+    unsigned scale = (height > 0 && height <= 240) ? 2u : 1u;
     unsigned width = current_line_width(e);
     unsigned source_height = std::min<unsigned>((unsigned)height * scale, kMaxEgaLines);
     display.publish_frame(e->firstline,

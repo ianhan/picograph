@@ -665,8 +665,8 @@ void draw_current_line(RenderContext *ctx, Vga *e)
 
 void publish_frame(Vga *e)
 {
-    int height = std::max(0, e->lastline - e->firstline);
-    unsigned scale = (height <= 240) ? 2u : 1u;
+    int height = (e->lastline >= e->firstline) ? (e->lastline - e->firstline + 1) : 0;
+    unsigned scale = (height > 0 && height <= 240) ? 2u : 1u;
     unsigned width = current_line_width(e);
     unsigned source_height = std::min<unsigned>((unsigned)height * scale, kMaxVgaLines);
     display.publish_frame(e->firstline,
